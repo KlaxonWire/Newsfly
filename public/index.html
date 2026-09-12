@@ -248,6 +248,7 @@ const chanBar = chanEl.querySelectorAll(".bar i");
 const chanVal = chanEl.querySelectorAll(".v");
 
 /* shared state the scene reads */
+const firedList = new Int32Array(2048);
 const S = { headline: "", source: "", ch: [0,0,0,0,0], verdict: null,
             wireHz: 0, skipHz: 0, act: 0, ticker: [] };
 
@@ -288,153 +289,158 @@ function wrapText(ctx, text, maxW, max) {
 }
 
 /* --- the set --- */
+
+// a real spike raster, scrolled one column per packet, built from the
+// indices the server actually sent. no decorative waveforms.
+const RW = 420, RH = 116;
+const ras = document.createElement("canvas");
+ras.width = RW; ras.height = RH;
+const rc = ras.getContext("2d");
+rc.fillStyle = "#07070C"; rc.fillRect(0, 0, RW, RH);
+
+function rasterColumn(fired) {
+  // scroll left
+  rc.drawImage(ras, -2, 0);
+  rc.fillStyle = "#07070C"; rc.fillRect(RW - 2, 0, 2, RH);
+  if (!fired || !fired.length) return;
+  const stride = Math.max(1, Math.floor(fired.length / 90));
+  for (let k = 0; k < fired.length; k += stride) {
+    const i = fired[k];
+    const y = (i / 139255) * RH;
+    // colour by where it sits in the index range, matching the brain panel
+    rc.fillStyle = i > 125000 ? "#D62839" : (i > 96000 ? "#4DB6C4" : "#E8A33D");
+    rc.fillRect(RW - 2, y, 2, 2);
+  }
+}
+
+const DESK_TOP = 404;              // surface the fly stands on
+const DESK_FRONT = 452;            // front edge of the desk slab
+
 function drawSet(now, glow) {
-  // studio wall
-  const g = x2.createLinearGradient(0, 0, SW * 0.4, SH);
-  g.addColorStop(0, "#141320"); g.addColorStop(1, "#08080D");
+  // studio depth
+  const g = x2.createLinearGradient(0, 0, 0, SH);
+  g.addColorStop(0, "#15141F"); g.addColorStop(0.62, "#0C0C13"); g.addColorStop(1, "#08080C");
   x2.fillStyle = g; x2.fillRect(0, 0, SW, SH);
 
-  // brand panel behind the anchor — the Klaxon Wire card, lit
-  const bx = SW * 0.055, by = 34, bw = SW * 0.40, bh = DESK_Y - 96;
+  // back wall: the brand card, dimmed so it sits behind rather than shouts
+  const bw = SW * 0.44, bh = 250, bx = 40, by = 40;
   const bg = x2.createLinearGradient(bx, by, bx + bw, by + bh);
-  bg.addColorStop(0, "#272248"); bg.addColorStop(0.45, "#4A2247");
-  bg.addColorStop(0.8, "#B3121F"); bg.addColorStop(1, "#E10F1E");
+  bg.addColorStop(0, "#1E1B36"); bg.addColorStop(0.5, "#39182F");
+  bg.addColorStop(1, "#7C0D17");
   x2.fillStyle = bg; x2.fillRect(bx, by, bw, bh);
-  // halftone
-  x2.fillStyle = "rgba(255,255,255,0.10)";
-  for (let yy = by + 5; yy < by + bh; yy += 11)
-    for (let xx = bx + 5; xx < bx + bw; xx += 11) x2.fillRect(xx, yy, 2, 2);
-  // wordmark
-  x2.fillStyle = "rgba(255,255,255,0.94)";
-  x2.font = "400 46px 'Archivo', Helvetica, Arial, sans-serif";
-  x2.fillText("KLAXON", bx + 26, by + bh * 0.46);
-  x2.fillText("WIRE", bx + 26, by + bh * 0.46 + 46);
+  x2.fillStyle = "rgba(255,255,255,0.07)";
+  for (let yy = by + 6; yy < by + bh; yy += 12)
+    for (let xx = bx + 6; xx < bx + bw; xx += 12) x2.fillRect(xx, yy, 2, 2);
+  x2.fillStyle = "rgba(255,255,255,0.80)";
+  x2.font = "400 30px 'Archivo', Helvetica, Arial, sans-serif";
+  x2.fillText("KLAXON", bx + 22, by + 150);
+  x2.fillText("WIRE", bx + 22, by + 182);
+  x2.fillStyle = "rgba(225,15,30,0.9)"; x2.fillRect(bx, by + bh - 3, bw, 3);
 
-  // monitor wall, right of the set
-  const mw = SW * 0.40, mx = SW * 0.545, my = 54;
-  drawWallScreen(mx, my, mw, 150, "LIVE ⌁ CONNECTOME", glow, function (px, py, pw, ph) {
-    // spike bars driven by activity
-    const n = 34;
-    for (let i = 0; i < n; i++) {
-      const h = (0.12 + Math.abs(Math.sin(now / 420 + i * 1.7)) * (0.25 + S.act * 0.72)) * ph;
-      x2.fillStyle = i % 5 === 0 ? "rgba(214,40,57,0.85)" : "rgba(232,163,61,0.55)";
-      x2.fillRect(px + 10 + i * ((pw - 20) / n), py + ph - h, (pw - 20) / n - 3, h);
-    }
-  });
-  drawWallScreen(mx, my + 166, mw, 120, "DESK ⌁ CHANNELS", glow, function (px, py, pw, ph) {
-    for (let c = 0; c < 5; c++) {
-      x2.font = "400 9px 'IBM Plex Mono', monospace";
-      x2.fillStyle = "rgba(140,138,153,0.9)";
-      x2.fillText(CHAN[c].toUpperCase(), px + 10, py + 18 + c * 20);
-      x2.fillStyle = "rgba(24,24,34,0.9)"; x2.fillRect(px + 118, py + 10 + c * 20, pw - 132, 9);
-      x2.fillStyle = "#E8A33D"; x2.fillRect(px + 118, py + 10 + c * 20, (pw - 132) * (S.ch[c] || 0), 9);
-    }
-  });
+  // wall raster screen, upper right
+  const sx = SW * 0.52, sy = 52, sw = 420, sh = 116;
+  x2.fillStyle = "#05050A"; x2.fillRect(sx - 7, sy - 22, sw + 14, sh + 29);
+  x2.fillStyle = "#12121B"; x2.fillRect(sx - 7, sy - 22, sw + 14, 20);
+  x2.fillStyle = "#D62839"; x2.fillRect(sx - 7, sy - 22, 3, 20);
+  x2.font = "600 10px 'IBM Plex Mono', monospace";
+  x2.fillStyle = "#6E6C7A"; x2.fillText("SPIKE RASTER ⌁ 139,255 NEURONS", sx + 4, sy - 8);
+  x2.drawImage(ras, sx, sy);
+  x2.fillStyle = "rgba(0,0,0,0.20)";
+  for (let yy = 0; yy < sh; yy += 3) x2.fillRect(sx, sy + yy, sw, 1);
 
-  // floor + desk
-  x2.fillStyle = "#0C0C13"; x2.fillRect(0, DESK_Y - 8, SW, SH - DESK_Y + 8);
-  const dg = x2.createLinearGradient(0, DESK_Y, SW, DESK_Y + 70);
-  dg.addColorStop(0, "#272248"); dg.addColorStop(0.5, "#7A1830"); dg.addColorStop(1, "#E10F1E");
-  x2.fillStyle = dg; x2.fillRect(0, DESK_Y, SW, 70);
-  x2.fillStyle = "rgba(255,255,255,0.10)";
-  for (let yy = DESK_Y + 6; yy < DESK_Y + 70; yy += 11)
+  // the desk
+  x2.fillStyle = "#0A0A10"; x2.fillRect(0, DESK_TOP, SW, SH - DESK_TOP);
+  const dg = x2.createLinearGradient(0, DESK_FRONT, SW, DESK_FRONT + 60);
+  dg.addColorStop(0, "#231F42"); dg.addColorStop(0.55, "#6B1428"); dg.addColorStop(1, "#C40D1B");
+  x2.fillStyle = dg; x2.fillRect(0, DESK_FRONT, SW, 58);
+  x2.fillStyle = "rgba(255,255,255,0.08)";
+  for (let yy = DESK_FRONT + 6; yy < DESK_FRONT + 58; yy += 11)
     for (let xx = 6; xx < SW; xx += 11) x2.fillRect(xx, yy, 2, 2);
-  x2.fillStyle = "rgba(255,255,255,0.22)"; x2.fillRect(0, DESK_Y, SW, 2);
-  // desk top surface catching the key light
-  x2.fillStyle = "#15141E"; x2.fillRect(0, DESK_Y - 8, SW, 8);
+  // desk surface, catching light
+  const sg = x2.createLinearGradient(0, DESK_TOP, 0, DESK_FRONT);
+  sg.addColorStop(0, "#1A1926"); sg.addColorStop(1, "#101019");
+  x2.fillStyle = sg; x2.fillRect(0, DESK_TOP, SW, DESK_FRONT - DESK_TOP);
+  x2.fillStyle = "rgba(255,255,255,0.16)"; x2.fillRect(0, DESK_TOP, SW, 1);
+  x2.fillStyle = "rgba(255,255,255,0.22)"; x2.fillRect(0, DESK_FRONT, SW, 2);
 
-  // key light from above the set
-  const kl = x2.createRadialGradient(SW * 0.30, -80, 40, SW * 0.30, 120, SH * 0.95);
-  kl.addColorStop(0, "rgba(255,240,225,0.10)"); kl.addColorStop(1, "rgba(255,240,225,0)");
+  // key light
+  const kl = x2.createRadialGradient(SW * 0.34, -60, 30, SW * 0.34, 150, SH);
+  kl.addColorStop(0, "rgba(255,242,228,0.09)"); kl.addColorStop(1, "rgba(255,242,228,0)");
   x2.fillStyle = kl; x2.fillRect(0, 0, SW, SH);
 }
 
-function drawWallScreen(x, y, w, h, label, glow, inner) {
-  x2.fillStyle = "#07070C"; x2.fillRect(x - 5, y - 5, w + 10, h + 10);
-  x2.fillStyle = "#0C0C14"; x2.fillRect(x, y, w, h);
-  x2.fillStyle = "#15151F"; x2.fillRect(x, y, w, 18);
-  x2.fillStyle = "#D62839"; x2.fillRect(x, y, 3, 18);
-  x2.font = "600 9px 'IBM Plex Mono', monospace";
-  x2.fillStyle = "#5C5A68"; x2.fillText(label, x + 10, y + 12);
+/* --- the monitor the fly is reading --- */
+function drawMonitor(now, glow) {
+  const mw = 336, mh = 194, mx = SW - mw - 78, my = DESK_TOP - mh - 26;
+
+  x2.fillStyle = "#0A0F11"; x2.fillRect(mx + mw / 2 - 13, my + mh, 26, 22);
+  x2.fillStyle = "#0E181B"; x2.fillRect(mx + mw / 2 - 52, my + mh + 22, 104, 7);
+  x2.fillStyle = "#07070B"; x2.fillRect(mx - 7, my - 7, mw + 14, mh + 14);
+  x2.fillStyle = "#04040A"; x2.fillRect(mx, my, mw, mh);
+
   x2.save();
-  x2.beginPath(); x2.rect(x, y + 18, w, h - 18); x2.clip();
-  inner(x, y + 18, w, h - 18);
+  x2.beginPath(); x2.rect(mx, my, mw, mh); x2.clip();
+  x2.fillStyle = "#101019"; x2.fillRect(mx, my, mw, 19);
+  x2.fillStyle = "#D62839"; x2.fillRect(mx, my, 3, 19);
+  x2.font = "600 9.5px 'IBM Plex Mono', monospace";
+  x2.fillStyle = "#7E7C8C"; x2.fillText("KLAXON WIRE ⌁ DESK", mx + 11, my + 13);
+  x2.fillStyle = S.verdict ? (S.verdict === "WIRE IT" ? "#D62839" : "#5E6B84") : "#E8A33D";
+  x2.fillText(S.verdict || "READING", mx + mw - 74, my + 13);
+
+  x2.font = "500 12px 'IBM Plex Mono', monospace";
+  x2.fillStyle = "#E8E6E1";
+  const lines = wrapText(x2, S.headline || "…", mw - 22, 4);
+  for (let i = 0; i < lines.length; i++) x2.fillText(lines[i], mx + 11, my + 42 + i * 17);
+
+  const by = my + 42 + lines.length * 17 + 12;
+  for (let c = 0; c < 5; c++) {
+    x2.font = "400 8.5px 'IBM Plex Mono', monospace";
+    x2.fillStyle = "#5C5A68";
+    x2.fillText(CHAN[c].toUpperCase(), mx + 11, by + c * 13 + 7);
+    x2.fillStyle = "#16161F"; x2.fillRect(mx + 124, by + c * 13, mw - 138, 7);
+    x2.fillStyle = "#E8A33D"; x2.fillRect(mx + 124, by + c * 13, (mw - 138) * (S.ch[c] || 0), 7);
+  }
+  x2.fillStyle = "rgba(0,0,0,0.17)";
+  for (let yy = 0; yy < mh; yy += 3) x2.fillRect(mx, my + yy, mw, 1);
+  x2.fillStyle = "rgba(96,176,214," + (0.025 + glow * 0.04).toFixed(3) + ")";
+  x2.fillRect(mx, my, mw, mh);
   x2.restore();
-  x2.fillStyle = "rgba(0,0,0,0.18)";
-  for (let sy = 0; sy < h; sy += 3) x2.fillRect(x, y + sy, w, 1);
-  x2.fillStyle = "rgba(110,180,215," + (0.02 + glow * 0.035).toFixed(3) + ")";
-  x2.fillRect(x, y, w, h);
+
+  // screen spill across the desk toward the fly
+  const spill = x2.createRadialGradient(mx + 20, my + mh, 10, mx + 20, my + mh, 420);
+  spill.addColorStop(0, "rgba(96,176,214," + (0.09 + glow * 0.07).toFixed(3) + ")");
+  spill.addColorStop(1, "rgba(96,176,214,0)");
+  x2.fillStyle = spill; x2.fillRect(0, 0, SW, SH);
+  return mx;
 }
 
-/* --- the anchor --- */
+/* --- the anchor, standing on the desk --- */
 function drawAnchor(now, glow) {
-  const cx = SW * 0.255, baseY = DESK_Y + 10;
+  const h = 152;                                   // small enough to read as a fly
+  const bob = Math.sin(now / 1100) * 1.6;
+  const cx = SW * 0.235;
+
   if (flyReady) {
-    const h = 300, w = h * (flySprite.width / flySprite.height || 1.3);
+    const w = h * (flySprite.width / flySprite.height || 1.92);
+    const x = cx - w / 2, y = DESK_TOP - h + bob;
+    // contact shadow on the desk surface
     x2.save();
-    x2.globalAlpha = 0.35;
-    x2.filter = "blur(6px)";
-    x2.drawImage(flySprite, cx - w / 2 + 8, baseY - h + 14, w, h);
+    x2.globalAlpha = 0.5;
+    x2.fillStyle = "#000";
+    x2.beginPath();
+    x2.ellipse(cx + 6, DESK_TOP + 3, w * 0.40, 7, 0, 0, Math.PI * 2);
+    x2.fill();
     x2.restore();
-    x2.drawImage(flySprite, cx - w / 2, baseY - h + Math.sin(now / 900) * 3, w, h);
+    x2.drawImage(flySprite, x, y, w, h);
+    // rim light from the monitor side
+    x2.save();
+    x2.globalCompositeOperation = "screen";
+    x2.globalAlpha = 0.10 + glow * 0.07;
+    x2.drawImage(flySprite, x, y, w, h);
+    x2.restore();
     return;
   }
-  drawVectorFly(cx, baseY - 74 + Math.sin(now / 900) * 2.4, glow);
-}
-
-function drawVectorFly(cx, fy, glow) {
-  x2.save();
-  x2.translate(cx, fy);
-  x2.strokeStyle = "#5E7F52"; x2.lineWidth = 5.5; x2.lineCap = "butt";
-  const legs = [[58,32,110,80],[28,38,56,84],[-32,36,-56,82]];
-  for (let L = 0; L < legs.length; L++) {
-    const a = legs[L];
-    x2.beginPath(); x2.moveTo(a[0], a[1]);
-    x2.lineTo(a[0] + (a[2]-a[0]) * 0.6, a[1] + (a[3]-a[1]) * 0.3);
-    x2.lineTo(a[2], a[3]); x2.stroke();
-  }
-  const ab = x2.createLinearGradient(-10, -44, 86, 64);
-  ab.addColorStop(0, "#A8C39A"); ab.addColorStop(0.55, "#7EA06E"); ab.addColorStop(1, "#42613A");
-  x2.fillStyle = ab;
-  x2.beginPath(); x2.ellipse(58, 18, 88, 52, -0.20, 0, Math.PI * 2); x2.fill();
-  x2.strokeStyle = "rgba(32,54,26,0.5)"; x2.lineWidth = 4;
-  for (let b = 0; b < 4; b++) {
-    x2.beginPath();
-    x2.ellipse(58, 18, 88 - b * 18, 52 - b * 10, -0.20, Math.PI * 0.16, Math.PI * 0.90);
-    x2.stroke();
-  }
-  const flick = Math.sin(now0 / 300) * 0.035 + S.act * 0.06;
-  for (let wI = 0; wI < 2; wI++) {
-    x2.save();
-    x2.rotate(-0.22 - wI * 0.14 + flick * (wI ? 1 : -1));
-    x2.fillStyle = wI ? "rgba(214,232,226,0.13)" : "rgba(224,240,236,0.21)";
-    x2.strokeStyle = "rgba(226,244,240,0.26)"; x2.lineWidth = 1.5;
-    x2.beginPath(); x2.ellipse(64, -34, 112, 31, -0.08, 0, Math.PI * 2);
-    x2.fill(); x2.stroke();
-    x2.restore();
-  }
-  const th = x2.createLinearGradient(-42, -42, 22, 32);
-  th.addColorStop(0, "#BBD4AC"); th.addColorStop(1, "#5C7E50");
-  x2.fillStyle = th;
-  x2.beginPath(); x2.ellipse(-10, 10, 60, 46, -0.10, 0, Math.PI * 2); x2.fill();
-  x2.fillStyle = "rgba(30,48,24,0.32)";
-  x2.beginPath(); x2.ellipse(0, 6, 32, 32, 0, 0, Math.PI * 2); x2.fill();
-  x2.fillStyle = "#9FBB90";
-  x2.beginPath(); x2.ellipse(-76, -12, 43, 39, 0, 0, Math.PI * 2); x2.fill();
-  for (let e = 0; e < 2; e++) {
-    const ex = -93 + e * 31, ey = -28 + e * 17;
-    const eg = x2.createRadialGradient(ex - 8, ey - 10, 3, ex, ey, 28);
-    eg.addColorStop(0, "#FF6E56"); eg.addColorStop(0.5, "#D6301F"); eg.addColorStop(1, "#6E1208");
-    x2.fillStyle = eg;
-    x2.beginPath(); x2.ellipse(ex, ey, 27, 24, -0.18, 0, Math.PI * 2); x2.fill();
-    x2.fillStyle = "rgba(130,206,228," + (0.34 + glow * 0.42).toFixed(3) + ")";
-    x2.fillRect(ex + 5, ey + 1, 14, 10);
-  }
-  x2.strokeStyle = "#5C7E50"; x2.lineWidth = 3.5;
-  const tw = Math.sin(now0 / 620) * 3;
-  x2.beginPath(); x2.moveTo(-97, -40); x2.lineTo(-112, -63 + tw); x2.stroke();
-  x2.beginPath(); x2.moveTo(-79, -46); x2.lineTo(-85, -71 + tw); x2.stroke();
-  x2.restore();
+  drawVectorFly(cx, DESK_TOP - 74 + bob, glow);
 }
 
 /* --- lower third + ticker --- */
@@ -511,6 +517,7 @@ function scene(now) {
   const dt = Math.min(now - lastT, 60); lastT = now; now0 = now;
   const glow = 0.5 + 0.5 * Math.sin(now / 520);
   drawSet(now, glow);
+  drawMonitor(now, glow);
   drawAnchor(now, glow);
   drawLowerThird();
   drawTicker(dt);
@@ -795,7 +802,9 @@ function applyState(s) {
                 (raw.charCodeAt(k * 3 + 1) << 8) |
                 (raw.charCodeAt(k * 3 + 2) << 16);
       if (i >= 0 && i < NCOUNT) actArr[i] = 1;
+      firedList[k] = i;
     }
+    rasterColumn(firedList.subarray(0, n));
     S.act = Math.min(1, n / 900);
   }
 }
@@ -936,9 +945,19 @@ let lastNote = null;
 function renderDeskNote(s) {
   const box = $("desknote");
   if (!s.verdict) {
+    const gap = s.wireHz - s.skipHz;
     box.className = "";
     $("dn-tag").textContent = "READING";
-    $("dn-text").textContent = S.headline ? "Still counting spikes." : "Waiting for the wire.";
+    if (!S.headline) {
+      $("dn-text").textContent = "Waiting for the wire.";
+    } else if (Math.abs(gap) < 0.25) {
+      $("dn-text").textContent = "Too close to call so far — " +
+        Math.abs(gap).toFixed(1) + " Hz between the pools.";
+    } else {
+      $("dn-text").textContent = (gap > 0 ? "Leaning toward running it" : "Leaning toward passing")
+        + " — " + Math.abs(gap).toFixed(1) + " Hz " +
+        (gap > 0 ? "to the wire side" : "to the skip side") + " and still counting.";
+    }
     lastNote = null;
     return;
   }
