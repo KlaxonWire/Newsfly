@@ -206,6 +206,38 @@ function loadEdges() {
 }
 
 /* ------------------------------------------------------------------ *
+ * 2b. tracts — a spread sample of real synaptic connections, as index
+ * pairs, so the browser can draw the wiring instead of only the somas.
+ * ------------------------------------------------------------------ */
+
+let tractBuf = null;
+
+function buildTracts(maxEdges, perNeuron) {
+  const pairs = [];
+  for (let i = 0; i < N && pairs.length < maxEdges * 2; i++) {
+    const a = rowPtr[i], b = rowPtr[i + 1];
+    if (b <= a) continue;
+    // strongest few connections out of each neuron, so the sample spreads
+    // across the whole brain rather than clumping in the densest hubs
+    let best = [];
+    for (let e = a; e < b; e++) best.push([colW[e], colIdx[e]]);
+    best.sort(function (p, q) { return q[0] - p[0]; });
+    const take = Math.min(perNeuron, best.length);
+    for (let k = 0; k < take; k++) { pairs.push(i, best[k][1]); }
+  }
+  const n = pairs.length / 2;
+  const buf = Buffer.alloc(8 + n * 8);
+  buf.write("FLYT", 0);
+  buf.writeUInt32LE(n, 4);
+  for (let k = 0; k < n; k++) {
+    buf.writeInt32LE(pairs[k * 2], 8 + k * 8);
+    buf.writeInt32LE(pairs[k * 2 + 1], 8 + k * 8 + 4);
+  }
+  tractBuf = buf;
+  console.log(`[tracts] ${n.toLocaleString()} connections sampled for the render`);
+}
+
+/* ------------------------------------------------------------------ *
  * 3. the simulation
  * ------------------------------------------------------------------ */
 
@@ -243,6 +275,15 @@ function initSim() {
   }
   console.log(`[sim] sensory ${SENSORY.length}, descending ${DESCENDING.length}, optic ${OPTIC.length}`);
 
+  // regions the readout reports on, straight off the real classification
+  const iCentral = SUP.indexOf("central"), iVP = SUP.indexOf("visual_projection");
+  for (let i = 0; i < N; i++) {
+    const s = supIdx[i];
+    if (s === iCentral) CENTRAL.push(i);
+    else if (s === iVP) VISPROJ.push(i);
+    if (sideIdx[i] === 0) LEFT.push(i); else if (sideIdx[i] === 1) RIGHT.push(i);
+  }
+
   // split the descending neurons by side: left reads as WIRE, right as SKIP.
   // arbitrary but fixed, and stated on the page — the fly has no opinion about
   // which hemisphere means what.
@@ -251,7 +292,7 @@ function initSim() {
   console.log(`[sim] wire pool ${WIRE_POOL.length}, skip pool ${SKIP_POOL.length}`);
 }
 
-let WIRE_POOL = [], SKIP_POOL = [];
+let WIRE_POOL = [], SKIP_POOL = [], CENTRAL = [], VISPROJ = [], LEFT = [], RIGHT = [];
 
 function step() {
   firedNow.fill(0);
@@ -450,7 +491,13 @@ const clients = new Set();
 function broadcast() {
   if (!clients.size) return;
   const windowMs = Math.max(1, brainClockMs - readStart);
+  const R = function (pool) { return +poolRateHz(pool, windowMs).toFixed(2); };
   const payload = JSON.stringify({
+    regions: {
+      optic: R(OPTIC), central: R(CENTRAL), sensory: R(SENSORY),
+      visproj: R(VISPROJ), descending: R(DESCENDING),
+      left: R(LEFT), right: R(RIGHT),
+    },
     story: current && {
       headline: current.headline, url: current.url, source: current.source, ch: current.ch,
     },
@@ -503,6 +550,13 @@ const server = http.createServer(async (req, res) => {
     }));
   }
 
+  if (url.pathname === "/data/tracts.bin") {
+    if (!tractBuf) { res.writeHead(503); return res.end(); }
+    res.writeHead(200, { "content-type": "application/octet-stream",
+                         "cache-control": "public, max-age=86400" });
+    return res.end(tractBuf);
+  }
+
   if (url.pathname === "/data/neurons.bin") {
     res.writeHead(200, { "content-type": "application/octet-stream",
                          "cache-control": "public, max-age=86400" });
@@ -528,6 +582,7 @@ const server = http.createServer(async (req, res) => {
   if (fs.existsSync(EDGES_BIN)) loadEdges();
   else await buildEdges(loadIds());
   initSim();
+  buildTracts(90000, 2);
 
   server.listen(PORT, () => console.log(`[http] listening on ${PORT}`));
 
