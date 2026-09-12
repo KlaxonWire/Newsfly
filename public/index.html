@@ -80,6 +80,39 @@ body{margin:0;background:var(--ground);color:var(--ink);
 #verdict.reading{color:var(--amber);border-left-color:var(--amber)}
 #rates{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
 
+/* desk note */
+#desknote{display:flex;gap:10px;align-items:baseline;padding:10px 12px;background:var(--panel2);
+          border-left:3px solid var(--amber)}
+#desknote.wire{border-left-color:var(--red)}
+#desknote.skip{border-left-color:var(--slate)}
+.dn-tag{font-family:"Archivo Black",sans-serif;font-size:10px;letter-spacing:.08em;
+        padding:3px 6px;background:var(--amber);color:#0B0B0F;flex:none}
+#desknote.wire .dn-tag{background:var(--red)}
+#desknote.skip .dn-tag{background:var(--slate);color:#0B0B0F}
+#dn-text{font-size:14px;line-height:1.42;color:var(--ink)}
+
+/* readout */
+.rbody{padding:12px;display:flex;flex-direction:column;gap:11px}
+.regions{display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:1px;background:var(--soft)}
+.reg{background:var(--panel);padding:7px 9px;display:flex;flex-direction:column;gap:3px}
+.reg span{font-family:"IBM Plex Mono",monospace;font-size:8.5px;letter-spacing:.14em;
+          text-transform:uppercase;color:var(--faint)}
+.reg b{font-family:"IBM Plex Mono",monospace;font-size:14px;font-weight:600;
+       font-variant-numeric:tabular-nums;color:var(--ink)}
+.reg i{height:3px;background:var(--panel2);display:block;position:relative;overflow:hidden}
+.reg i u{position:absolute;inset:0 auto 0 0;width:0;background:var(--amber);text-decoration:none}
+#rlog{display:flex;flex-direction:column;gap:0;border-top:1px solid var(--soft)}
+.rline{font-family:"IBM Plex Mono",monospace;font-size:11.5px;line-height:1.5;
+       padding:6px 0;border-bottom:1px solid var(--soft);color:var(--dim);
+       display:flex;gap:9px;align-items:baseline}
+.rline:last-child{border-bottom:0}
+.rline em{font-style:normal;color:var(--faint);flex:none}
+.rline.now{color:var(--ink)}
+.rline.now em{color:var(--amber)}
+.rline b{color:var(--amber);font-weight:600}
+.rline b.red{color:var(--red)}
+.rline b.slate{color:var(--slate)}
+
 /* telemetry */
 .grid4{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--soft)}
 .c{background:var(--panel);padding:9px 11px;display:flex;flex-direction:column;gap:2px}
@@ -134,6 +167,15 @@ body{margin:0;background:var(--ground);color:var(--ink);
       <div class="panel">
         <div class="head"><span class="lbl">Live view ⌁ fly</span><span class="lbl" id="stagestat">—</span></div>
         <canvas id="stage" width="1000" height="560" aria-label="A fruit fly at a desk reading the wire"></canvas>
+      </div>
+
+      <div class="panel" id="readoutpanel">
+        <div class="head"><span class="lbl">What the fly is doing</span><span class="lbl" id="r-state">—</span></div>
+        <div class="rbody">
+          <div id="desknote"><span class="dn-tag" id="dn-tag">READING</span><span id="dn-text">—</span></div>
+          <div class="regions" id="regions"></div>
+          <div id="rlog"></div>
+        </div>
       </div>
 
       <div class="panel">
@@ -486,6 +528,22 @@ requestAnimationFrame(scene);
 const cv = $("gl");
 const gl = cv.getContext("webgl", { antialias: true, alpha: false });
 
+/* tract shader — real synaptic connections drawn as lines between the two
+   neurons they join, brightening when either end fires */
+const TVS = `
+attribute vec3 tPos; attribute float tAct; attribute float tSide;
+uniform mat4 uMvpT;
+varying float vA; varying float vS;
+void main(){ gl_Position = uMvpT * vec4(tPos, 1.0); vA = tAct; vS = tSide; }`;
+const TFS = `
+precision mediump float;
+varying float vA; varying float vS;
+void main(){
+  vec3 cold = mix(vec3(0.16,0.20,0.42), vec3(0.24,0.16,0.40), vS);
+  vec3 hot  = vec3(1.0, 0.62, 0.22);
+  gl_FragColor = vec4(mix(cold, hot, min(1.0, vA * 1.4)), 0.030 + vA * 0.60);
+}`;
+
 const VS = `
 attribute vec3 aPos; attribute float aClass; attribute float aAct;
 uniform mat4 uMvp; uniform float uScale;
@@ -511,8 +569,8 @@ void main(){
   if (r > 0.25) discard;
   // unfired neurons are a faint ghost; a spike is near-white and opaque,
   // which is what makes individual firings read as flashes
-  float a = (0.045 + vAct * 0.95) * (1.0 - r * 2.2);
-  vec3 c = mix(vCol * 0.85, vec3(1.0, 0.96, 0.88), min(1.0, vAct * 1.3));
+  float a = (0.115 + vAct * 0.88) * (1.0 - r * 2.2);
+  vec3 c = mix(vCol * 1.05, vec3(1.0, 0.96, 0.88), min(1.0, vAct * 1.3));
   gl_FragColor = vec4(c, a);
 }`;
 
@@ -530,13 +588,24 @@ const aPos = gl.getAttribLocation(prog, "aPos"), aClass = gl.getAttribLocation(p
       uMvp = gl.getUniformLocation(prog, "uMvp"), uScale = gl.getUniformLocation(prog, "uScale");
 gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE); gl.disable(gl.DEPTH_TEST);
 
-let NCOUNT = 0, actArr = null, actBuf = null;
+const tprog = gl.createProgram();
+gl.attachShader(tprog, sh(gl.VERTEX_SHADER, TVS));
+gl.attachShader(tprog, sh(gl.FRAGMENT_SHADER, TFS));
+gl.linkProgram(tprog);
+const tPos = gl.getAttribLocation(tprog, "tPos"),
+      tAct = gl.getAttribLocation(tprog, "tAct"),
+      tSide = gl.getAttribLocation(tprog, "tSide"),
+      uMvpT = gl.getUniformLocation(tprog, "uMvpT");
+
+let TCOUNT = 0, tPosBuf = null, tActBuf = null, tActArr = null, tMap = null;
+
+let NCOUNT = 0, actArr = null, actBuf = null, pos = null, posBuf = null, clsBuf = null;
 
 fetch("/data/neurons.bin").then(function (r) { return r.arrayBuffer(); }).then(function (ab) {
   const dv = new DataView(ab);
   const n = dv.getUint32(4, true); NCOUNT = n;
   $("ncount").textContent = fmt(n);
-  const pos = new Float32Array(n * 3), cls = new Float32Array(n);
+  pos = new Float32Array(n * 3); const cls = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const o = 8 + i * 14;
     pos[i*3]     =  dv.getInt16(o, true) / 32767;
@@ -549,14 +618,54 @@ fetch("/data/neurons.bin").then(function (r) { return r.arrayBuffer(); }).then(f
     const b = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, d, gl.STATIC_DRAW);
     gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+    return b;
   }
-  vb(pos, aPos, 3); vb(cls, aClass, 1);
+  posBuf = vb(pos, aPos, 3); clsBuf = vb(cls, aClass, 1);
   actBuf = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, actBuf);
   gl.bufferData(gl.ARRAY_BUFFER, actArr, gl.DYNAMIC_DRAW);
   gl.enableVertexAttribArray(aAct); gl.vertexAttribPointer(aAct, 1, gl.FLOAT, false, 0, 0);
+  // wiring: real connections, drawn between the two neurons they join
+  fetch("/data/tracts.bin").then(function (r) {
+    if (!r.ok) throw new Error("no tracts");
+    return r.arrayBuffer();
+  }).then(function (tb) {
+    const tv = new DataView(tb);
+    const m = tv.getUint32(4, true);
+    TCOUNT = m * 2;
+    const lp = new Float32Array(TCOUNT * 3);
+    const ls = new Float32Array(TCOUNT);
+    tMap = new Int32Array(TCOUNT);
+    for (let e = 0; e < m; e++) {
+      const a = tv.getInt32(8 + e * 8, true), b = tv.getInt32(8 + e * 8 + 4, true);
+      for (let q = 0; q < 2; q++) {
+        const src = q ? b : a, dst = e * 2 + q;
+        lp[dst * 3] = pos[src * 3];
+        lp[dst * 3 + 1] = pos[src * 3 + 1];
+        lp[dst * 3 + 2] = pos[src * 3 + 2];
+        ls[dst] = pos[src * 3] > 0 ? 1 : 0;
+        tMap[dst] = src;
+      }
+    }
+    tActArr = new Float32Array(TCOUNT);
+    gl.useProgram(tprog);
+    tPosBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, tPosBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, lp, gl.STATIC_DRAW);
+    const sb = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, sb);
+    gl.bufferData(gl.ARRAY_BUFFER, ls, gl.STATIC_DRAW);
+    tSideBuf = sb;
+    tActBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, tActBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, tActArr, gl.DYNAMIC_DRAW);
+    gl.useProgram(prog);
+    $("glnote").textContent = "FLYWIRE FAFB V783 · " + m.toLocaleString() + " TRACTS · DRAG TO ROTATE";
+  }).catch(function () {});
+
   requestAnimationFrame(draw);
 });
+let tSideBuf = null;
 
 function mul(a, b) {
   const o = new Float32Array(16);
@@ -574,7 +683,7 @@ function rotY(a){const c=Math.cos(a),s=Math.sin(a);return new Float32Array([c,0,
 function rotX(a){const c=Math.cos(a),s=Math.sin(a);return new Float32Array([1,0,0,0,0,c,s,0,0,-s,c,0,0,0,0,1]);}
 function trans(x,y,z){return new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,x,y,z,1]);}
 
-let yaw = 0, pitch = -0.20, dist = 2.55, dragging = false, lx = 0, ly = 0, auto = true;
+let yaw = 0, pitch = -0.20, dist = 2.18, dragging = false, lx = 0, ly = 0, auto = true;
 cv.addEventListener("pointerdown", function (e) { dragging = true; auto = false; lx = e.clientX; ly = e.clientY; });
 addEventListener("pointerup", function () { dragging = false; });
 addEventListener("pointermove", function (e) {
@@ -601,15 +710,43 @@ function draw(t) {
   if (auto) yaw = Math.sin(t / 9000) * 0.55;
   if (actArr) {
     for (let i = 0; i < actArr.length; i++) actArr[i] *= 0.928;
+    gl.useProgram(prog);
     gl.bindBuffer(gl.ARRAY_BUFFER, actBuf);
     gl.bufferSubData(gl.ARRAY_BUFFER, 0, actArr);
   }
   const asp = (cv.width || 1) / (cv.height || 1);
-  gl.uniformMatrix4fv(uMvp, false,
-    mul(persp(0.95, asp, 0.05, 20), mul(trans(0,0,-dist), mul(rotX(pitch), rotY(yaw)))));
-  gl.uniform1f(uScale, Math.min(cv.width, cv.height) * 0.0030);
+  const mvp = mul(persp(0.95, asp, 0.05, 20),
+                  mul(trans(0,0,-dist), mul(rotX(pitch), rotY(yaw))));
   gl.clearColor(0.027, 0.027, 0.043, 1);
   gl.clear(gl.COLOR_BUFFER_BIT);
+
+  // wiring underneath, somas on top
+  if (TCOUNT && tActArr) {
+    for (let k = 0; k < TCOUNT; k++) tActArr[k] = actArr[tMap[k]];
+    gl.useProgram(tprog);
+    gl.uniformMatrix4fv(uMvpT, false, mvp);
+    gl.bindBuffer(gl.ARRAY_BUFFER, tPosBuf);
+    gl.enableVertexAttribArray(tPos); gl.vertexAttribPointer(tPos, 3, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, tSideBuf);
+    gl.enableVertexAttribArray(tSide); gl.vertexAttribPointer(tSide, 1, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, tActBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, tActArr);
+    gl.enableVertexAttribArray(tAct); gl.vertexAttribPointer(tAct, 1, gl.FLOAT, false, 0, 0);
+    gl.drawArrays(gl.LINES, 0, TCOUNT);
+    gl.disableVertexAttribArray(tPos);
+    gl.disableVertexAttribArray(tSide);
+    gl.disableVertexAttribArray(tAct);
+  }
+
+  gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+  gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, clsBuf);
+  gl.enableVertexAttribArray(aClass); gl.vertexAttribPointer(aClass, 1, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ARRAY_BUFFER, actBuf);
+  gl.enableVertexAttribArray(aAct); gl.vertexAttribPointer(aAct, 1, gl.FLOAT, false, 0, 0);
+  gl.uniformMatrix4fv(uMvp, false, mvp);
+  gl.uniform1f(uScale, Math.min(cv.width, cv.height) * 0.0030);
   if (NCOUNT) gl.drawArrays(gl.POINTS, 0, NCOUNT);
   requestAnimationFrame(draw);
 }
@@ -645,6 +782,8 @@ function applyState(s) {
   $("t-skip").textContent = s.skipHz.toFixed(1);
   $("qd").textContent = s.queued + " queued";
   if (s.ticker && s.ticker.length) S.ticker = s.ticker;
+  renderReadout(s);
+  renderDeskNote(s);
 
   // each packet carries the indices of neurons that actually fired, 3 bytes
   // each, so exactly those points light rather than a smear across bins
@@ -659,6 +798,156 @@ function applyState(s) {
     }
     S.act = Math.min(1, n / 900);
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * readout — plain English for what the network is actually doing.
+ * Every clause is a threshold on a number that is also shown on screen.
+ * No opinions are generated: a spiking network does not have any.
+ * ------------------------------------------------------------------ */
+const REGIONS = [
+  { k: "optic",      n: "Optic lobes" },
+  { k: "visproj",    n: "Visual proj." },
+  { k: "sensory",    n: "Sensory" },
+  { k: "central",    n: "Central brain" },
+  { k: "descending", n: "Descending" },
+];
+const regEl = $("regions");
+REGIONS.forEach(function (r) {
+  const d = document.createElement("div");
+  d.className = "reg";
+  d.innerHTML = '<span>' + r.n + '</span><b>0.0</b><i><u></u></i>';
+  regEl.appendChild(d);
+});
+const regVal = regEl.querySelectorAll("b"), regBar = regEl.querySelectorAll("u");
+
+let rlog = [], lastLine = "", lastHead = null;
+
+function narrate(s) {
+  const R = s.regions; if (!R) return null;
+  const peak = REGIONS.map(function (r) { return { n: r.n, v: R[r.k] || 0 }; })
+                      .sort(function (a, b) { return b.v - a.v; })[0];
+  const lead = (R.left || 0) - (R.right || 0);
+  const gap = s.wireHz - s.skipHz;
+  const chNames = ["footage", "casualty count", "hardware", "US relevance", "recency"];
+  let ci = 0;
+  for (let i = 1; i < 5; i++) if (S.ch[i] > S.ch[ci]) ci = i;
+
+  const parts = [];
+  parts.push(peak.n + " loudest at <b>" + peak.v.toFixed(1) + " Hz</b>");
+
+  if (Math.abs(lead) < 0.15) parts.push("hemispheres level");
+  else parts.push((lead > 0 ? "left" : "right") + " hemisphere ahead by <b>" +
+                  Math.abs(lead).toFixed(1) + " Hz</b>");
+
+  if (S.ch[ci] > 0.55) parts.push(chNames[ci] + " driving hardest at <b>" + S.ch[ci].toFixed(2) + "</b>");
+  else parts.push("no channel above <b>0.55</b> — thin stimulus");
+
+  if (s.verdict) {
+    parts.push("settled <b class=\"" + (s.verdict === "WIRE IT" ? "red" : "slate") +
+               "\">" + s.verdict + "</b> on a <b>" + Math.abs(gap).toFixed(1) + " Hz</b> margin");
+  } else if (Math.abs(gap) < 0.2) {
+    parts.push("output pools still tied");
+  } else {
+    parts.push("leaning <b class=\"" + (gap > 0 ? "red" : "slate") + "\">" +
+               (gap > 0 ? "WIRE" : "SKIP") + "</b>");
+  }
+  return parts.join(". ") + ".";
+}
+
+function renderReadout(s) {
+  if (!s.regions) return;
+  for (let i = 0; i < REGIONS.length; i++) {
+    const v = s.regions[REGIONS[i].k] || 0;
+    regVal[i].textContent = v.toFixed(1);
+    regBar[i].style.width = Math.min(100, v * 7) + "%";
+  }
+  $("r-state").textContent = s.verdict ? "settled" : "reading";
+
+  const line = narrate(s);
+  if (!line) return;
+  // a new line when the story changes, or when the narration meaningfully moves
+  const head = s.story ? s.story.headline : null;
+  if (head !== lastHead || line !== lastLine) {
+    if (head !== lastHead) { lastHead = head; rlog = []; }
+    if (line !== lastLine) {
+      lastLine = line;
+      rlog.unshift({ t: new Date().toISOString().slice(11, 19), line: line });
+      if (rlog.length > 4) rlog.pop();
+      $("rlog").innerHTML = rlog.map(function (r, i) {
+        return '<div class="rline' + (i === 0 ? " now" : "") + '"><em>' + r.t + '</em><span>' +
+               r.line + '</span></div>';
+      }).join("");
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * desk note — the editorial line. Written from templates chosen by the
+ * simulation's own numbers, not by a language model, so there is nothing
+ * on this page that a model wrote and nothing that can drift from the data.
+ * ------------------------------------------------------------------ */
+const CHN = ["footage", "a casualty figure", "hardware", "a US angle", "anything fresh"];
+
+const WIRE_LINES = [
+  "Run it. {ch} carried this one on its own — {gap} Hz clear.",
+  "That's a lead. The left side never dropped below the right after the first second.",
+  "Wire it. {reg} lit up and stayed lit. Nothing subtle about this.",
+  "Yes. Strongest signal since the queue refreshed, and it wasn't close — {gap} Hz.",
+  "Take it. {ch} is doing the work here; the rest of the channels barely registered.",
+  "Run it, but it's thin — only {gap} Hz in it. Worth a second source before you post.",
+];
+const SKIP_LINES = [
+  "Pass. {miss} and nothing to show — the sensory side never woke up.",
+  "Skip it. {reg} carried the whole response, which means nobody's watching this one.",
+  "No. {gap} Hz the wrong way and not a single channel above 0.55.",
+  "Leave it. Real story, wrong format — there's no footage to put a headline over.",
+  "Pass, narrowly — {gap} Hz. If pictures turn up this flips.",
+  "Not for the wire. Everything here is words, and words don't travel.",
+];
+
+function deskNote(s) {
+  if (!s.verdict) return null;
+  const gap = Math.abs(s.wireHz - s.skipHz).toFixed(1);
+  let ci = 0, lo = 0;
+  for (let i = 1; i < 5; i++) {
+    if (S.ch[i] > S.ch[ci]) ci = i;
+    if (S.ch[i] < S.ch[lo]) lo = i;
+  }
+  const R = s.regions || {};
+  const peak = REGIONS.map(function (r) { return { n: r.n, v: R[r.k] || 0 }; })
+                      .sort(function (a, b) { return b.v - a.v; })[0];
+  const bank = s.verdict === "WIRE IT" ? WIRE_LINES : SKIP_LINES;
+  // pick deterministically off the headline so the same story reads the same
+  let h = 0;
+  const key = (S.headline || "") + s.verdict;
+  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+  // a tight margin forces one of the hedged lines
+  let idx = h % bank.length;
+  if (parseFloat(gap) < 0.4) idx = bank.length - 2;
+  return bank[idx]
+    .replace("{ch}", CHN[ci].charAt(0).toUpperCase() + CHN[ci].slice(1))
+    .replace("{miss}", "No " + CHN[lo].replace(/^a /, ""))
+    .replace("{gap}", gap)
+    .replace("{reg}", peak.n);
+}
+
+let lastNote = null;
+function renderDeskNote(s) {
+  const box = $("desknote");
+  if (!s.verdict) {
+    box.className = "";
+    $("dn-tag").textContent = "READING";
+    $("dn-text").textContent = S.headline ? "Still counting spikes." : "Waiting for the wire.";
+    lastNote = null;
+    return;
+  }
+  const note = deskNote(s);
+  if (note === lastNote) return;
+  lastNote = note;
+  box.className = s.verdict === "WIRE IT" ? "wire" : "skip";
+  $("dn-tag").textContent = s.verdict;
+  $("dn-text").textContent = note;
 }
 
 function loadLedger() {
