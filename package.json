@@ -1,0 +1,9 @@
+{
+  "name": "newsfly",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A Drosophila connectome reading the news wire.",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" }
+}

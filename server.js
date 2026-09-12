@@ -1,0 +1,503 @@
+/*
+ * Newsfly — a Drosophila connectome reading the wire.
+ *
+ * Runs a leaky integrate-and-fire simulation over the real FlyWire FAFB
+ * connectome (139,255 neurons), drives it with live news headlines through
+ * the sensory populations, and decodes the descending neurons into an
+ * editorial verdict. State streams to the browser over Server-Sent Events.
+ *
+ * Zero dependencies. Node 18+ (needs global fetch).
+ *
+ * Data:
+ *   data/neurons.bin   shipped in the repo (1.9 MB) — positions, nt, class
+ *   data/ids.txt.gz    shipped in the repo — root_id per index
+ *   data/edges.bin     built on first boot from Codex, then cached
+ *
+ * Env:
+ *   CODEX_TOKEN   FlyWire Codex API token (required on first boot only)
+ *   PORT          set by the host
+ */
+
+"use strict";
+
+const http = require("http");
+const fs = require("fs");
+const fsp = require("fs/promises");
+const path = require("path");
+const zlib = require("zlib");
+const { Readable } = require("stream");
+const { createInterface } = require("readline");
+
+const DATA = path.join(__dirname, "data");
+const PUBLIC = path.join(__dirname, "public");
+const PORT = process.env.PORT || 3000;
+
+/* ------------------------------------------------------------------ *
+ * 1. neurons
+ * ------------------------------------------------------------------ */
+
+const NT = ["", "ACH", "GLUT", "GABA", "SER", "DA", "OCT"];
+const SUP = ["", "optic", "central", "sensory", "visual_projection", "ascending",
+             "descending", "sensory_ascending", "visual_centrifugal", "motor", "endocrine"];
+
+// Fly neurotransmitters: acetylcholine excites; GABA and glutamate (via GluCl)
+// inhibit. Modulators are treated as weakly excitatory — they are ~1% of the
+// population and a sign for them would be a guess either way.
+const NT_SIGN = { "": 1, ACH: 1, GLUT: -1, GABA: -1, SER: 0.3, DA: 0.3, OCT: 0.3 };
+
+let N = 0;
+let posX, posY, posZ, ntIdx, supIdx, sideIdx, flowFlags;
+
+function loadNeurons() {
+  const buf = fs.readFileSync(path.join(DATA, "neurons.bin"));
+  if (buf.slice(0, 4).toString() !== "FLYN") throw new Error("neurons.bin: bad magic");
+  N = buf.readUInt32LE(4);
+  posX = new Int16Array(N); posY = new Int16Array(N); posZ = new Int16Array(N);
+  ntIdx = new Uint8Array(N); supIdx = new Uint8Array(N);
+  sideIdx = new Uint8Array(N); flowFlags = new Uint8Array(N);
+  const STRIDE = 14;
+  for (let i = 0; i < N; i++) {
+    const o = 8 + i * STRIDE;
+    posX[i] = buf.readInt16LE(o);
+    posY[i] = buf.readInt16LE(o + 2);
+    posZ[i] = buf.readInt16LE(o + 4);
+    ntIdx[i] = buf[o + 6];
+    supIdx[i] = buf[o + 7];
+    sideIdx[i] = buf[o + 8];
+    flowFlags[i] = buf[o + 9];
+  }
+  console.log(`[neurons] ${N.toLocaleString()} loaded`);
+}
+
+function loadIds() {
+  const gz = fs.readFileSync(path.join(DATA, "ids.txt.gz"));
+  const txt = zlib.gunzipSync(gz).toString("utf8");
+  const lines = txt.split("\n");
+  const map = new Map();
+  for (let i = 0; i < N; i++) {
+    const id = lines[i] && lines[i].trim();
+    if (id) map.set(id, i);
+  }
+  console.log(`[ids] ${map.size.toLocaleString()} mapped`);
+  return map;
+}
+
+/* ------------------------------------------------------------------ *
+ * 2. edges — fetched once from Codex, packed to CSR, cached on disk
+ * ------------------------------------------------------------------ */
+
+const EDGES_BIN = path.join(DATA, "edges.bin");
+const CODEX_URL =
+  "https://codex.flywire.ai/api/download_resource" +
+  "?data_product=connections&dataset=fafb&api_token=";
+
+let rowPtr, colIdx, colW;   // CSR: rowPtr[i]..rowPtr[i+1] index into colIdx/colW
+
+async function buildEdges(idMap) {
+  const token = process.env.CODEX_TOKEN;
+  if (!token) {
+    throw new Error(
+      "edges.bin is missing and CODEX_TOKEN is not set.\n" +
+      "Add CODEX_TOKEN in the host's environment settings, then redeploy."
+    );
+  }
+  console.log("[edges] downloading the connection table from Codex…");
+  const res = await fetch(CODEX_URL + encodeURIComponent(token));
+  if (!res.ok) {
+    throw new Error(
+      `Codex returned ${res.status}. Check CODEX_TOKEN, or download ` +
+      `"Connections (Filtered)" by hand and commit it as data/connections.csv.gz.`
+    );
+  }
+
+  const src = Readable.fromWeb(res.body).pipe(zlib.createGunzip());
+  const rl = createInterface({ input: src, crlfDelay: Infinity });
+
+  let header = null, iPre = -1, iPost = -1, iSyn = -1, iNt = -1;
+  const pre = [], post = [], wt = [];
+  let seen = 0, dropped = 0;
+
+  for await (const line of rl) {
+    if (!line) continue;
+    if (header === null) {
+      header = line.split(",").map((s) => s.trim().toLowerCase().replace(/^"|"$/g, ""));
+      iPre = header.findIndex((h) => h.includes("pre") && h.includes("root"));
+      iPost = header.findIndex((h) => h.includes("post") && h.includes("root"));
+      iSyn = header.findIndex((h) => h.includes("syn") && h.includes("count"));
+      if (iSyn < 0) iSyn = header.findIndex((h) => h === "weight" || h === "syn_count");
+      iNt = header.findIndex((h) => h.includes("nt") && h.includes("type"));
+      if (iPre < 0 || iPost < 0) {
+        throw new Error("connections: could not find pre/post columns in header: " + header.join(","));
+      }
+      console.log(`[edges] columns pre=${header[iPre]} post=${header[iPost]} ` +
+                  `syn=${iSyn >= 0 ? header[iSyn] : "(none, weight=1)"}`);
+      continue;
+    }
+    const f = line.split(",");
+    const a = idMap.get(f[iPre]); const b = idMap.get(f[iPost]);
+    seen++;
+    if (a === undefined || b === undefined) { dropped++; continue; }
+    let w = iSyn >= 0 ? parseInt(f[iSyn], 10) : 1;
+    if (!Number.isFinite(w) || w <= 0) w = 1;
+    pre.push(a); post.push(b); wt.push(Math.min(w, 32767));
+  }
+  console.log(`[edges] ${seen.toLocaleString()} rows, ` +
+              `${dropped.toLocaleString()} dropped (neuron not in table)`);
+
+  const M = pre.length;
+  const counts = new Int32Array(N + 1);
+  for (let e = 0; e < M; e++) counts[pre[e] + 1]++;
+  for (let i = 0; i < N; i++) counts[i + 1] += counts[i];
+  const idxArr = new Int32Array(M);
+  const wArr = new Int16Array(M);
+  const cursor = Int32Array.from(counts);
+  for (let e = 0; e < M; e++) {
+    const p = cursor[pre[e]]++;
+    idxArr[p] = post[e];
+    wArr[p] = wt[e];
+  }
+
+  const head = Buffer.alloc(12);
+  head.write("FLYE", 0);
+  head.writeUInt32LE(N, 4);
+  head.writeUInt32LE(M, 8);
+  await fsp.writeFile(EDGES_BIN, Buffer.concat([
+    head, Buffer.from(counts.buffer), Buffer.from(idxArr.buffer), Buffer.from(wArr.buffer),
+  ]));
+  console.log(`[edges] packed ${M.toLocaleString()} synaptic connections`);
+  rowPtr = counts; colIdx = idxArr; colW = wArr;
+}
+
+function loadEdges() {
+  const buf = fs.readFileSync(EDGES_BIN);
+  if (buf.slice(0, 4).toString() !== "FLYE") throw new Error("edges.bin: bad magic");
+  const n = buf.readUInt32LE(4), m = buf.readUInt32LE(8);
+  let o = 12;
+  rowPtr = new Int32Array(buf.buffer.slice(buf.byteOffset + o, buf.byteOffset + o + (n + 1) * 4));
+  o += (n + 1) * 4;
+  colIdx = new Int32Array(buf.buffer.slice(buf.byteOffset + o, buf.byteOffset + o + m * 4));
+  o += m * 4;
+  colW = new Int16Array(buf.buffer.slice(buf.byteOffset + o, buf.byteOffset + o + m * 2));
+  console.log(`[edges] ${m.toLocaleString()} connections loaded from cache`);
+}
+
+/* ------------------------------------------------------------------ *
+ * 3. the simulation
+ * ------------------------------------------------------------------ */
+
+const V_THRESH = 1.0;
+const LEAK = 0.96;          // per 1 ms step
+const REFRACTORY = 2;       // steps
+const W_SCALE = 0.0016;     // synapse count -> membrane units
+
+let v, refr, drive, firedNow, spikeCount;
+let spikesTotal = 0, brainClockMs = 0;
+
+// populations, resolved once from the real classification
+let SENSORY = [], DESCENDING = [], OPTIC = [];
+
+function initSim() {
+  v = new Float32Array(N);
+  refr = new Uint8Array(N);
+  drive = new Float32Array(N);
+  firedNow = new Uint8Array(N);
+  spikeCount = new Uint32Array(N);
+
+  const iSens = SUP.indexOf("sensory"), iSensAsc = SUP.indexOf("sensory_ascending");
+  const iDesc = SUP.indexOf("descending"), iOptic = SUP.indexOf("optic");
+  for (let i = 0; i < N; i++) {
+    const s = supIdx[i];
+    if (s === iSens || s === iSensAsc) SENSORY.push(i);
+    else if (s === iDesc) DESCENDING.push(i);
+    else if (s === iOptic) OPTIC.push(i);
+  }
+  console.log(`[sim] sensory ${SENSORY.length}, descending ${DESCENDING.length}, optic ${OPTIC.length}`);
+
+  // split the descending neurons by side: left reads as WIRE, right as SKIP.
+  // arbitrary but fixed, and stated on the page — the fly has no opinion about
+  // which hemisphere means what.
+  WIRE_POOL = DESCENDING.filter((i) => sideIdx[i] === 0);
+  SKIP_POOL = DESCENDING.filter((i) => sideIdx[i] === 1);
+  console.log(`[sim] wire pool ${WIRE_POOL.length}, skip pool ${SKIP_POOL.length}`);
+}
+
+let WIRE_POOL = [], SKIP_POOL = [];
+
+function step() {
+  firedNow.fill(0);
+  for (let i = 0; i < N; i++) {
+    if (refr[i] > 0) { refr[i]--; v[i] = 0; continue; }
+    v[i] = v[i] * LEAK + drive[i];
+    if (v[i] >= V_THRESH) {
+      firedNow[i] = 1; v[i] = 0; refr[i] = REFRACTORY;
+      spikeCount[i]++; spikesTotal++;
+    }
+  }
+  // propagate only from neurons that actually fired
+  for (let i = 0; i < N; i++) {
+    if (!firedNow[i]) continue;
+    const sign = NT_SIGN[NT[ntIdx[i]]] || 1;
+    const a = rowPtr[i], b = rowPtr[i + 1];
+    for (let e = a; e < b; e++) {
+      v[colIdx[e]] += sign * colW[e] * W_SCALE;
+    }
+  }
+  brainClockMs++;
+}
+
+function poolRateHz(pool, windowMs) {
+  if (!pool.length || windowMs <= 0) return 0;
+  let s = 0;
+  for (let k = 0; k < pool.length; k++) s += spikeCount[pool[k]];
+  return s / pool.length / (windowMs / 1000);
+}
+
+/* ------------------------------------------------------------------ *
+ * 4. the wire
+ * ------------------------------------------------------------------ */
+
+const FEEDS = [
+  { name: "AP World", url: "https://rsshub.app/apnews/topics/world-news" },
+  { name: "Al Jazeera", url: "https://www.aljazeera.com/xml/rss/all.xml" },
+  { name: "BBC World", url: "https://feeds.bbci.co.uk/news/world/rss.xml" },
+  { name: "NPR World", url: "https://feeds.npr.org/1004/rss.xml" },
+  { name: "Sky News", url: "https://feeds.skynews.com/feeds/rss/world.xml" },
+];
+
+const HARD = /\b(kill|killed|dead|death|toll|fatal|casualt)\w*/i;
+const HARDWARE = /\b(missile|drone|tank|jet|fighter|warship|artillery|strike|airbase|air base|submarine|helicopter)\w*/i;
+const VISUAL = /\b(video|footage|cctv|filmed|caught on camera|watch|dashcam)\w*/i;
+const US = /\b(u\.?s\.?|america|american|washington|trump|pentagon|florida|texas|california|new york)\b/i;
+
+function scoreStory(title, ageHours) {
+  const num = (title.match(/\b\d{1,4}\b/) || [null])[0];
+  return [
+    VISUAL.test(title) ? 0.9 : 0.25,                                  // footage
+    HARD.test(title) ? (num ? 0.95 : 0.7) : 0.05,                     // casualties
+    HARDWARE.test(title) ? 0.9 : 0.05,                                // hardware
+    US.test(title) ? 0.9 : 0.2,                                       // US relevance
+    Math.max(0, 1 - ageHours / 24),                                   // recency
+  ];
+}
+
+function parseRss(xml, source) {
+  const out = [];
+  const items = xml.split(/<item[\s>]/i).slice(1);
+  for (const raw of items.slice(0, 25)) {
+    const t = /<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/i.exec(raw);
+    const l = /<link>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/link>/i.exec(raw);
+    const d = /<pubDate>([\s\S]*?)<\/pubDate>/i.exec(raw);
+    if (!t) continue;
+    const title = t[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").trim();
+    if (!title) continue;
+    const ts = d ? Date.parse(d[1]) : Date.now();
+    out.push({
+      id: Buffer.from(title).toString("base64url").slice(0, 22),
+      headline: title,
+      url: l ? l[1].trim() : "",
+      source,
+      ts: Number.isFinite(ts) ? ts : Date.now(),
+    });
+  }
+  return out;
+}
+
+let queue = [];
+const seenIds = new Set();
+
+async function sweep() {
+  let added = 0;
+  for (const f of FEEDS) {
+    try {
+      const res = await fetch(f.url, { headers: { "user-agent": "newsfly/1.0" } });
+      if (!res.ok) continue;
+      const xml = await res.text();
+      for (const s of parseRss(xml, f.name)) {
+        if (seenIds.has(s.id)) continue;
+        seenIds.add(s.id);
+        s.ch = scoreStory(s.headline, (Date.now() - s.ts) / 3.6e6);
+        queue.push(s);
+        added++;
+      }
+    } catch (e) {
+      console.warn(`[wire] ${f.name}: ${e.message}`);
+    }
+  }
+  // freshest first, cap the backlog
+  queue.sort((a, b) => b.ts - a.ts);
+  if (queue.length > 120) queue.length = 120;
+  console.log(`[wire] +${added} stories, ${queue.length} queued`);
+}
+
+/* ------------------------------------------------------------------ *
+ * 5. the reading loop
+ * ------------------------------------------------------------------ */
+
+const READ_MS = 9000;      // simulated ms spent on one headline
+const LEDGER_FILE = path.join(DATA, "ledger.json");
+let ledger = [];
+try { ledger = JSON.parse(fs.readFileSync(LEDGER_FILE, "utf8")); } catch (e) { ledger = []; }
+
+let current = null, readStart = 0, lastVerdict = null;
+
+function applyStimulus(story) {
+  drive.fill(0);
+  // each stimulus channel drives a fifth of the real sensory population
+  const band = Math.floor(SENSORY.length / 5);
+  for (let c = 0; c < 5; c++) {
+    const lo = c * band, hi = c === 4 ? SENSORY.length : (c + 1) * band;
+    const amp = 0.010 + story.ch[c] * 0.055;
+    for (let k = lo; k < hi; k++) drive[SENSORY[k]] = amp;
+  }
+  // a trickle into the optic lobes so the brain isn't silent between stories
+  for (let k = 0; k < OPTIC.length; k += 7) drive[OPTIC[k]] = 0.004;
+  spikeCount.fill(0);
+}
+
+function beginStory() {
+  if (!queue.length) return;
+  current = queue.shift();
+  applyStimulus(current);
+  readStart = brainClockMs;
+  lastVerdict = null;
+  console.log(`[read] ${current.headline.slice(0, 70)}`);
+}
+
+function finishStory() {
+  const windowMs = brainClockMs - readStart;
+  const wireHz = poolRateHz(WIRE_POOL, windowMs);
+  const skipHz = poolRateHz(SKIP_POOL, windowMs);
+  const verdict = wireHz > skipHz ? "WIRE IT" : "SKIP";
+  lastVerdict = verdict;
+  const rec = {
+    at: new Date().toISOString(),
+    headline: current.headline,
+    url: current.url,
+    source: current.source,
+    ch: current.ch,
+    wireHz: +wireHz.toFixed(2),
+    skipHz: +skipHz.toFixed(2),
+    verdict,
+  };
+  ledger.push(rec);
+  if (ledger.length > 500) ledger.shift();
+  fsp.writeFile(LEDGER_FILE, JSON.stringify(ledger)).catch(() => {});
+  current = null;
+}
+
+/* activity summary for the browser: 4096 bins over the population */
+const BINS = 4096;
+const binAct = new Float32Array(BINS);
+function summarise() {
+  binAct.fill(0);
+  const per = N / BINS;
+  for (let i = 0; i < N; i++) if (firedNow[i]) binAct[Math.min(BINS - 1, (i / per) | 0)] += 1;
+  const b = Buffer.alloc(BINS);
+  for (let k = 0; k < BINS; k++) b[k] = Math.min(255, Math.round(binAct[k] * 60));
+  return b.toString("base64");
+}
+
+/* ------------------------------------------------------------------ *
+ * 6. http + sse
+ * ------------------------------------------------------------------ */
+
+const clients = new Set();
+
+function broadcast() {
+  if (!clients.size) return;
+  const windowMs = Math.max(1, brainClockMs - readStart);
+  const payload = JSON.stringify({
+    story: current && {
+      headline: current.headline, url: current.url, source: current.source, ch: current.ch,
+    },
+    verdict: lastVerdict,
+    wireHz: +poolRateHz(WIRE_POOL, windowMs).toFixed(2),
+    skipHz: +poolRateHz(SKIP_POOL, windowMs).toFixed(2),
+    spikes: spikesTotal,
+    clock: brainClockMs,
+    queued: queue.length,
+    act: summarise(),
+  });
+  for (const res of clients) {
+    try { res.write(`data: ${payload}\n\n`); } catch (e) { clients.delete(res); }
+  }
+}
+
+const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript",
+               ".css": "text/css", ".bin": "application/octet-stream",
+               ".json": "application/json" };
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, "http://x");
+
+  if (url.pathname === "/stream") {
+    res.writeHead(200, {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache",
+      connection: "keep-alive",
+    });
+    res.write(": open\n\n");
+    clients.add(res);
+    req.on("close", () => clients.delete(res));
+    return;
+  }
+
+  if (url.pathname === "/api/ledger") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify(ledger.slice(-100).reverse()));
+  }
+
+  if (url.pathname === "/api/meta") {
+    res.writeHead(200, { "content-type": "application/json" });
+    return res.end(JSON.stringify({
+      neurons: N,
+      edges: colIdx ? colIdx.length : 0,
+      dataset: "FlyWire FAFB v783 (CC-BY 4.0)",
+      sensory: SENSORY.length, descending: DESCENDING.length,
+      wirePool: WIRE_POOL.length, skipPool: SKIP_POOL.length,
+    }));
+  }
+
+  if (url.pathname === "/data/neurons.bin") {
+    res.writeHead(200, { "content-type": "application/octet-stream",
+                         "cache-control": "public, max-age=86400" });
+    return fs.createReadStream(path.join(DATA, "neurons.bin")).pipe(res);
+  }
+
+  const file = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\/+/, "");
+  const full = path.join(PUBLIC, file);
+  if (!full.startsWith(PUBLIC)) { res.writeHead(403); return res.end(); }
+  fs.readFile(full, (err, data) => {
+    if (err) { res.writeHead(404); return res.end("not found"); }
+    res.writeHead(200, { "content-type": MIME[path.extname(full)] || "text/plain" });
+    res.end(data);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ * 7. boot
+ * ------------------------------------------------------------------ */
+
+(async function main() {
+  loadNeurons();
+  if (fs.existsSync(EDGES_BIN)) loadEdges();
+  else await buildEdges(loadIds());
+  initSim();
+
+  server.listen(PORT, () => console.log(`[http] listening on ${PORT}`));
+
+  await sweep();
+  setInterval(() => sweep().catch(() => {}), 10 * 60 * 1000);
+
+  // simulation clock: 400 steps of 1 simulated ms every 100 ms of wall time
+  setInterval(() => {
+    if (!current) beginStory();
+    for (let s = 0; s < 400; s++) step();
+    if (current && brainClockMs - readStart >= READ_MS) finishStory();
+  }, 100);
+
+  setInterval(broadcast, 250);
+})().catch((e) => {
+  console.error("\n" + e.message + "\n");
+  process.exit(1);
+});
