@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Newsfly — Klaxon Wire</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Archivo+Black&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#0B0B0F; --panel:rgba(19,19,25,.86); --rule:#2A2A35; --rule-soft:#20202A;
+  --ink:#E8E6E1; --dim:#8C8A99; --faint:#5C5A68;
+  --red:#D62839; --amber:#E8A33D; --cyan:#4DB6C4; --slate:#5E6B84;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;background:var(--ground);color:var(--ink);overflow:hidden;
+  font-family:"Archivo","Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased;
+}
+#gl{position:fixed;inset:0;width:100%;height:100%;display:block;background:var(--ground)}
+.mono{font-family:"IBM Plex Mono",ui-monospace,monospace}
+.lbl{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:9.5px;letter-spacing:.18em;
+     text-transform:uppercase;color:var(--faint)}
+
+/* masthead */
+#top{position:fixed;top:0;left:0;right:0;display:flex;align-items:center;gap:12px;
+     padding:12px 16px;border-bottom:2px solid var(--red);
+     background:linear-gradient(180deg,rgba(11,11,15,.95),rgba(11,11,15,0));z-index:3}
+#top .mark{width:28px;height:28px;background:var(--red);display:grid;place-items:center;flex:none}
+#top .mark span{font-family:"Archivo Black",sans-serif;font-size:16px;color:#0B0B0F;line-height:1}
+#top b{font-family:"Archivo Black",sans-serif;font-size:12px;letter-spacing:.20em;color:var(--dim)}
+#top h1{margin:0;font-family:"Archivo Black",sans-serif;font-size:20px;letter-spacing:-.01em}
+#top .spacer{flex:1}
+#live{display:flex;align-items:center;gap:7px;color:var(--red);font-weight:600;letter-spacing:.14em;
+      font-family:"IBM Plex Mono",monospace;font-size:11px}
+#live i{width:8px;height:8px;background:var(--red);display:block}
+@media (prefers-reduced-motion:no-preference){#live i{animation:bl 1.4s steps(1,end) infinite}}
+@keyframes bl{0%,60%{opacity:1}61%,100%{opacity:.15}}
+
+/* panels */
+.panel{position:fixed;background:var(--panel);border:1px solid var(--rule);
+       backdrop-filter:blur(8px);z-index:2}
+.panel > .head{display:flex;justify-content:space-between;gap:10px;padding:8px 12px;
+               border-bottom:1px solid var(--rule-soft)}
+
+#wire{left:16px;bottom:16px;width:min(440px,calc(100vw - 32px))}
+#wire .body{padding:12px}
+#wire h2{margin:0 0 8px;font-size:17px;line-height:1.22;font-weight:700;text-wrap:balance}
+#wire .src{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--dim);
+           display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+#wire .src a{color:var(--cyan);text-decoration:none;border-bottom:1px solid rgba(77,182,196,.35)}
+.chan{display:grid;grid-template-columns:112px 1fr 34px;align-items:center;gap:8px;margin-bottom:4px}
+.chan .bar{height:5px;background:#1B1B23;position:relative;overflow:hidden}
+.chan .bar i{position:absolute;inset:0 auto 0 0;background:var(--amber);width:0;transition:width .45s}
+.chan .v{text-align:right;font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--dim);
+         font-variant-numeric:tabular-nums}
+#vrow{display:flex;align-items:center;gap:10px;margin-top:10px;padding-top:10px;
+      border-top:1px solid var(--rule-soft);flex-wrap:wrap}
+#verdict{font-family:"Archivo Black",sans-serif;font-size:13px;letter-spacing:.09em;padding:7px 12px;
+         background:#1B1B23;color:var(--faint);border-left:4px solid var(--rule)}
+#verdict.wire{background:var(--red);color:#0B0B0F;border-left-color:#F05161}
+#verdict.skip{color:var(--slate);border-left-color:var(--slate)}
+#verdict.reading{color:var(--amber);border-left-color:var(--amber)}
+#rates{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--dim);
+       font-variant-numeric:tabular-nums}
+
+#tel{right:16px;top:64px;width:min(268px,calc(100vw - 32px))}
+#tel .grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--rule-soft)}
+#tel .c{background:#13131A;padding:9px 11px;display:flex;flex-direction:column;gap:2px}
+#tel .c b{font-family:"IBM Plex Mono",monospace;font-size:15px;font-weight:600;
+          font-variant-numeric:tabular-nums}
+#tel .c.a b{color:var(--amber)} #tel .c.r b{color:var(--red)}
+
+#led{right:16px;bottom:16px;width:min(340px,calc(100vw - 32px));max-height:38vh;display:flex;
+     flex-direction:column}
+#ledbody{overflow-y:auto;overflow-x:hidden}
+.row{padding:8px 12px;border-bottom:1px solid var(--rule-soft);display:flex;flex-direction:column;gap:3px}
+.row:last-child{border-bottom:0}
+.row .t{font-size:12px;line-height:1.3}
+.row .m{font-family:"IBM Plex Mono",monospace;font-size:9.5px;color:var(--faint);
+        display:flex;gap:8px;flex-wrap:wrap}
+.row .m b{padding:1px 5px;font-family:"Archivo Black",sans-serif;font-size:9px;letter-spacing:.06em}
+.row .m b.wire{background:var(--red);color:#0B0B0F}
+.row .m b.skip{background:#1B1B23;color:var(--slate);box-shadow:inset 0 0 0 1px var(--rule)}
+
+#foot{position:fixed;left:16px;top:64px;z-index:2;max-width:min(330px,calc(100vw - 32px));
+      font-family:"IBM Plex Mono",monospace;font-size:10px;line-height:1.6;color:var(--faint)}
+#foot b{color:var(--dim);font-weight:500}
+#foot a{color:var(--cyan);text-decoration:none}
+
+@media (max-width:760px){
+  #tel,#foot{display:none}
+  #led{left:16px;right:16px;width:auto;max-height:26vh;bottom:auto;top:60px}
+  #wire{bottom:12px}
+}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-thumb{background:#2A2A35}
+:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+</style>
+</head>
+<body>
+
+<canvas id="gl"></canvas>
+
+<div id="top">
+  <div class="mark"><span>K</span></div>
+  <div>
+    <b>KLAXON WIRE</b>
+    <h1>Newsfly</h1>
+  </div>
+  <div class="spacer"></div>
+  <div id="live"><i></i><span id="livetxt">CONNECTING</span></div>
+</div>
+
+<div id="foot">
+  <b>FlyWire FAFB v783</b> — <span id="ncount">139,255</span> neurons,
+  <span id="ecount">—</span> synaptic connections. Leaky integrate-and-fire over the
+  real connectome. Headlines drive the sensory populations; the descending neurons
+  decode to a verdict. Data CC-BY 4.0,
+  <a href="https://flywire.ai" target="_blank" rel="noopener">FlyWire</a>.
+</div>
+
+<div class="panel" id="tel">
+  <div class="head"><span class="lbl">Telemetry</span><span class="lbl" id="qd">—</span></div>
+  <div class="grid">
+    <div class="c"><span class="lbl">Total spikes</span><b id="t-spikes">0</b></div>
+    <div class="c a"><span class="lbl">Brain clock</span><b id="t-clock">0</b></div>
+    <div class="c r"><span class="lbl">Wire pool</span><b id="t-wire">0.0</b></div>
+    <div class="c"><span class="lbl">Skip pool</span><b id="t-skip">0.0</b></div>
+  </div>
+</div>
+
+<div class="panel" id="wire">
+  <div class="head"><span class="lbl">On the wire</span><span class="lbl" id="w-src">—</span></div>
+  <div class="body">
+    <h2 id="w-head">Waiting for the wire…</h2>
+    <div class="src"><span id="w-org">—</span><a id="w-link" href="#" target="_blank" rel="noopener">source</a></div>
+    <div id="w-chan"></div>
+    <div id="vrow">
+      <div id="verdict" class="reading">READING</div>
+      <div id="rates">wire 0.0 Hz · skip 0.0 Hz</div>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="led">
+  <div class="head"><span class="lbl">Decision ledger</span><span class="lbl" id="l-n">0</span></div>
+  <div id="ledbody"></div>
+</div>
+
+<script>
+"use strict";
+
+/* ---------------- channels ---------------- */
+const CHAN = ["Footage", "Casualties", "Hardware", "US relevance", "Recency"];
+const chanEl = document.getElementById("w-chan");
+CHAN.forEach(function (name) {
+  const d = document.createElement("div");
+  d.className = "chan";
+  d.innerHTML = '<span class="lbl">' + name + '</span><span class="bar"><i></i></span><span class="v">—</span>';
+  chanEl.appendChild(d);
+});
+const chanBar = chanEl.querySelectorAll(".bar i");
+const chanVal = chanEl.querySelectorAll(".v");
+
+/* ---------------- webgl point cloud ---------------- */
+const cv = document.getElementById("gl");
+const gl = cv.getContext("webgl", { antialias: true, alpha: false });
+
+const VS = `
+attribute vec3 aPos;
+attribute float aClass;
+attribute float aAct;
+uniform mat4 uMvp;
+uniform float uScale;
+varying vec3 vCol;
+varying float vAct;
+void main(){
+  gl_Position = uMvp * vec4(aPos, 1.0);
+  float d = gl_Position.w;
+  gl_PointSize = clamp(uScale / d, 1.0, 5.0) * (1.0 + aAct * 2.2);
+  // 1 optic, 2 central, 3 sensory, 4 visual_projection, 6 descending, 9 motor
+  vec3 c = vec3(0.28, 0.34, 0.42);
+  if (aClass == 1.0) c = vec3(0.24, 0.50, 0.66);
+  else if (aClass == 2.0) c = vec3(0.72, 0.52, 0.22);
+  else if (aClass == 3.0) c = vec3(0.68, 0.20, 0.24);
+  else if (aClass == 4.0) c = vec3(0.46, 0.36, 0.66);
+  else if (aClass == 6.0) c = vec3(0.34, 0.78, 0.62);
+  else if (aClass == 9.0) c = vec3(0.95, 0.95, 0.95);
+  vCol = c; vAct = aAct;
+}`;
+
+const FS = `
+precision mediump float;
+varying vec3 vCol;
+varying float vAct;
+void main(){
+  vec2 p = gl_PointCoord - vec2(0.5);
+  float r = dot(p, p);
+  if (r > 0.25) discard;
+  float a = (0.30 + vAct * 0.70) * (1.0 - r * 2.4);
+  vec3 c = mix(vCol, vec3(1.0, 0.92, 0.80), vAct * 0.85);
+  gl_FragColor = vec4(c, a);
+}`;
+
+function sh(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, sh(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+const aPos = gl.getAttribLocation(prog, "aPos");
+const aClass = gl.getAttribLocation(prog, "aClass");
+const aAct = gl.getAttribLocation(prog, "aAct");
+const uMvp = gl.getUniformLocation(prog, "uMvp");
+const uScale = gl.getUniformLocation(prog, "uScale");
+
+gl.enable(gl.BLEND);
+gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+gl.disable(gl.DEPTH_TEST);
+
+let NCOUNT = 0, actArr = null, actBuf = null;
+
+fetch("/data/neurons.bin").then(function (r) { return r.arrayBuffer(); }).then(function (ab) {
+  const dv = new DataView(ab);
+  if (String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3)) !== "FLYN")
+    throw new Error("neurons.bin: bad magic");
+  const n = dv.getUint32(4, true);
+  NCOUNT = n;
+  document.getElementById("ncount").textContent = n.toLocaleString();
+  const pos = new Float32Array(n * 3);
+  const cls = new Float32Array(n);
+  const STRIDE = 14;
+  for (let i = 0; i < n; i++) {
+    const o = 8 + i * STRIDE;
+    // quantised int16 -> normalised, then centred; z is the shallow axis
+    pos[i * 3]     =  dv.getInt16(o, true) / 32767 * 1.00;
+    pos[i * 3 + 1] = -dv.getInt16(o + 2, true) / 32767 * 0.52;
+    pos[i * 3 + 2] =  dv.getInt16(o + 4, true) / 32767 * 0.38;
+    cls[i] = dv.getUint8(o + 7);
+  }
+  actArr = new Float32Array(n);
+
+  function vb(data, loc, size) {
+    const b = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, size, gl.FLOAT, false, 0, 0);
+    return b;
+  }
+  vb(pos, aPos, 3);
+  vb(cls, aClass, 1);
+  actBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, actBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, actArr, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(aAct);
+  gl.vertexAttribPointer(aAct, 1, gl.FLOAT, false, 0, 0);
+
+  requestAnimationFrame(draw);
+});
+
+/* --- matrices --- */
+function mul(a, b) {
+  const o = new Float32Array(16);
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+    let s = 0;
+    for (let k = 0; k < 4; k++) s += a[k * 4 + j] * b[i * 4 + k];
+    o[i * 4 + j] = s;
+  }
+  return o;
+}
+function persp(fov, asp, n, f) {
+  const t = 1 / Math.tan(fov / 2);
+  return new Float32Array([t / asp,0,0,0, 0,t,0,0, 0,0,(f+n)/(n-f),-1, 0,0,2*f*n/(n-f),0]);
+}
+function rotY(a){const c=Math.cos(a),s=Math.sin(a);
+  return new Float32Array([c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1]);}
+function rotX(a){const c=Math.cos(a),s=Math.sin(a);
+  return new Float32Array([1,0,0,0, 0,c,s,0, 0,-s,c,0, 0,0,0,1]);}
+function trans(x,y,z){return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1]);}
+
+let yaw = 0, pitch = -0.22, dist = 2.7, dragging = false, lx = 0, ly = 0, auto = true;
+cv.addEventListener("pointerdown", function (e) { dragging = true; auto = false; lx = e.clientX; ly = e.clientY; });
+addEventListener("pointerup", function () { dragging = false; });
+addEventListener("pointermove", function (e) {
+  if (!dragging) return;
+  yaw += (e.clientX - lx) * 0.006;
+  pitch = Math.max(-1.3, Math.min(1.3, pitch + (e.clientY - ly) * 0.006));
+  lx = e.clientX; ly = e.clientY;
+});
+cv.addEventListener("wheel", function (e) {
+  e.preventDefault();
+  dist = Math.max(1.3, Math.min(6, dist + e.deltaY * 0.0018));
+}, { passive: false });
+
+function resize() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  cv.width = innerWidth * dpr; cv.height = innerHeight * dpr;
+  gl.viewport(0, 0, cv.width, cv.height);
+}
+addEventListener("resize", resize); resize();
+
+function draw(t) {
+  if (auto) yaw = Math.sin(t / 9000) * 0.55;
+  // activity decays between packets so spikes read as flashes
+  if (actArr) {
+    for (let i = 0; i < actArr.length; i++) actArr[i] *= 0.90;
+    gl.bindBuffer(gl.ARRAY_BUFFER, actBuf);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, actArr);
+  }
+  const asp = cv.width / cv.height;
+  const mvp = mul(persp(0.95, asp, 0.05, 20), mul(trans(0, 0, -dist), mul(rotX(pitch), rotY(yaw))));
+  gl.uniformMatrix4fv(uMvp, false, mvp);
+  gl.uniform1f(uScale, Math.min(cv.width, cv.height) * 0.0022);
+  gl.clearColor(0.043, 0.043, 0.059, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  if (NCOUNT) gl.drawArrays(gl.POINTS, 0, NCOUNT);
+  requestAnimationFrame(draw);
+}
+
+/* ---------------- live stream ---------------- */
+const $ = function (id) { return document.getElementById(id); };
+const fmt = function (n) { return Number(n).toLocaleString("en-US"); };
+
+fetch("/api/meta").then(function (r) { return r.json(); }).then(function (m) {
+  $("ecount").textContent = fmt(m.edges);
+});
+
+function applyState(s) {
+  if (s.story) {
+    $("w-head").textContent = s.story.headline;
+    $("w-org").textContent = s.story.source;
+    $("w-src").textContent = s.story.source;
+    $("w-link").href = s.story.url || "#";
+    for (let i = 0; i < 5; i++) {
+      chanBar[i].style.width = Math.round(s.story.ch[i] * 100) + "%";
+      chanVal[i].textContent = s.story.ch[i].toFixed(2);
+    }
+  }
+  const v = $("verdict");
+  if (s.verdict) { v.className = s.verdict === "WIRE IT" ? "wire" : "skip"; v.textContent = s.verdict; }
+  else { v.className = "reading"; v.textContent = "READING"; }
+  $("rates").textContent = "wire " + s.wireHz.toFixed(1) + " Hz · skip " + s.skipHz.toFixed(1) + " Hz";
+  $("t-spikes").textContent = fmt(s.spikes);
+  $("t-clock").textContent = fmt(s.clock) + " ms";
+  $("t-wire").textContent = s.wireHz.toFixed(1);
+  $("t-skip").textContent = s.skipHz.toFixed(1);
+  $("qd").textContent = s.queued + " queued";
+
+  if (s.act && actArr) {
+    const bin = atob(s.act);
+    const per = NCOUNT / bin.length;
+    for (let k = 0; k < bin.length; k++) {
+      const a = bin.charCodeAt(k) / 255;
+      if (a <= 0) continue;
+      const lo = Math.floor(k * per), hi = Math.floor((k + 1) * per);
+      for (let i = lo; i < hi; i++) actArr[i] = Math.max(actArr[i], a);
+    }
+  }
+}
+
+function loadLedger() {
+  fetch("/api/ledger").then(function (r) { return r.json(); }).then(function (rows) {
+    $("l-n").textContent = rows.length;
+    $("ledbody").innerHTML = rows.map(function (d) {
+      return '<div class="row"><div class="t">' + d.headline.replace(/</g, "&lt;") + '</div>' +
+        '<div class="m"><b class="' + (d.verdict === "WIRE IT" ? "wire" : "skip") + '">' + d.verdict + '</b>' +
+        '<span>' + d.at.slice(11, 19) + 'Z</span><span>' + d.source + '</span>' +
+        '<span>w ' + d.wireHz.toFixed(1) + ' · s ' + d.skipHz.toFixed(1) + '</span></div></div>';
+    }).join("");
+  }).catch(function () {});
+}
+
+let lastVerdict = null;
+const es = new EventSource("/stream");
+es.onopen = function () { $("livetxt").textContent = "RUNNING"; };
+es.onerror = function () { $("livetxt").textContent = "RECONNECTING"; };
+es.onmessage = function (ev) {
+  const s = JSON.parse(ev.data);
+  applyState(s);
+  if (s.verdict && s.verdict !== lastVerdict) { lastVerdict = s.verdict; loadLedger(); }
+  if (!s.verdict) lastVerdict = null;
+};
+loadLedger();
+</script>
+</body>
+</html>
