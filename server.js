@@ -212,10 +212,16 @@ function loadEdges() {
 const V_THRESH = 1.0;
 const LEAK = 0.96;          // per 1 ms step
 const REFRACTORY = 2;       // steps
-const W_SCALE = 0.0016;     // synapse count -> membrane units
+const W_SCALE = 0.0045;     // synapse count -> membrane units
 
 let v, refr, drive, firedNow, spikeCount;
 let spikesTotal = 0, brainClockMs = 0;
+
+// Indices of neurons that fired since the last broadcast. The browser lights
+// exactly these, so spikes read as individual flashes rather than a smear.
+const FLASH_CAP = 1400;
+const flash = new Int32Array(FLASH_CAP);
+let flashN = 0;
 
 // populations, resolved once from the real classification
 let SENSORY = [], DESCENDING = [], OPTIC = [];
@@ -255,6 +261,7 @@ function step() {
     if (v[i] >= V_THRESH) {
       firedNow[i] = 1; v[i] = 0; refr[i] = REFRACTORY;
       spikeCount[i]++; spikesTotal++;
+      if (flashN < FLASH_CAP) flash[flashN++] = i;
     }
   }
   // propagate only from neurons that actually fired
@@ -366,13 +373,26 @@ let current = null, readStart = 0, lastVerdict = null;
 
 function applyStimulus(story) {
   drive.fill(0);
-  // each stimulus channel drives a fifth of the real sensory population
+
+  // The two output pools are the left and right descending neurons, so the
+  // stimulus has to be asymmetric or the hemispheres receive identical input
+  // and their rates track each other exactly. Left sensory neurons carry the
+  // case FOR running it — footage, casualties, hardware. Right sensory neurons
+  // carry the case against: how little there is to show. Everything between
+  // the sensory neurons and the descending ones is the real connectome.
+  const show = (story.ch[0] * 0.45 + story.ch[1] * 0.35 + story.ch[2] * 0.20);
+  const pass = 1 - show;
   const band = Math.floor(SENSORY.length / 5);
-  for (let c = 0; c < 5; c++) {
-    const lo = c * band, hi = c === 4 ? SENSORY.length : (c + 1) * band;
-    const amp = 0.010 + story.ch[c] * 0.055;
-    for (let k = lo; k < hi; k++) drive[SENSORY[k]] = amp;
+
+  for (let k = 0; k < SENSORY.length; k++) {
+    const i = SENSORY[k];
+    const c = Math.min(4, Math.floor(k / band));
+    const left = sideIdx[i] === 0;
+    const weight = left ? show : pass;
+    // channel score still shapes which part of the population carries it
+    drive[i] = 0.012 + weight * (0.030 + story.ch[c] * 0.050);
   }
+
   // a trickle into the optic lobes so the brain isn't silent between stories
   for (let k = 0; k < OPTIC.length; k += 7) drive[OPTIC[k]] = 0.004;
   spikeCount.fill(0);
@@ -409,15 +429,15 @@ function finishStory() {
   current = null;
 }
 
-/* activity summary for the browser: 4096 bins over the population */
-const BINS = 4096;
-const binAct = new Float32Array(BINS);
-function summarise() {
-  binAct.fill(0);
-  const per = N / BINS;
-  for (let i = 0; i < N; i++) if (firedNow[i]) binAct[Math.min(BINS - 1, (i / per) | 0)] += 1;
-  const b = Buffer.alloc(BINS);
-  for (let k = 0; k < BINS; k++) b[k] = Math.min(255, Math.round(binAct[k] * 60));
+/* the neurons that fired since the last packet, as 24-bit indices */
+function drainFlashes() {
+  const n = flashN;
+  const b = Buffer.alloc(n * 3);
+  for (let k = 0; k < n; k++) {
+    const i = flash[k];
+    b[k * 3] = i & 255; b[k * 3 + 1] = (i >> 8) & 255; b[k * 3 + 2] = (i >> 16) & 255;
+  }
+  flashN = 0;
   return b.toString("base64");
 }
 
@@ -440,7 +460,7 @@ function broadcast() {
     spikes: spikesTotal,
     clock: brainClockMs,
     queued: queue.length,
-    act: summarise(),
+    fired: drainFlashes(),
   });
   for (const res of clients) {
     try { res.write(`data: ${payload}\n\n`); } catch (e) { clients.delete(res); }
