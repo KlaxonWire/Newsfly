@@ -460,6 +460,7 @@ function broadcast() {
     spikes: spikesTotal,
     clock: brainClockMs,
     queued: queue.length,
+    ticker: queue.slice(0, 8).map(function (q) { return q.headline; }),
     fired: drainFlashes(),
   });
   for (const res of clients) {
