@@ -206,175 +206,276 @@ const chanBar = chanEl.querySelectorAll(".bar i");
 const chanVal = chanEl.querySelectorAll(".v");
 
 /* shared state the scene reads */
-const S = { headline: "", ch: [0,0,0,0,0], verdict: null, wireHz: 0, skipHz: 0, act: 0 };
+const S = { headline: "", source: "", ch: [0,0,0,0,0], verdict: null,
+            wireHz: 0, skipHz: 0, act: 0, ticker: [] };
 
 /* ------------------------------------------------------------------ *
- * the fly at the desk
+ * the Klaxon Wire studio
+ *
+ * A newsroom set drawn to canvas: brand backdrop, monitor wall, anchor
+ * desk, lower third and a breaking ticker. The anchor is a fly.
+ *
+ * If public/fly.png exists it is used as the anchor — a rendered fly on
+ * transparency, facing left, roughly 900x700. Otherwise the vector fly
+ * below stands in.
  * ------------------------------------------------------------------ */
 const stage = $("stage");
 const x2 = stage.getContext("2d");
 const SW = stage.width, SH = stage.height;
 
-function wrapMono(ctx, text, maxW) {
-  const words = text.split(" "); const lines = []; let line = "";
+const flySprite = new Image();
+let flyReady = false;
+flySprite.onload = function () { flyReady = true; };
+flySprite.src = "/fly.png";
+
+const DESK_Y = SH - 168;          // top edge of the anchor desk
+const LOWER_Y = SH - 116;         // lower third
+const TICK_Y = SH - 46;           // ticker strip
+
+function wrapText(ctx, text, maxW, max) {
+  const words = String(text).split(" "); const lines = []; let line = "";
   for (let i = 0; i < words.length; i++) {
-    const test = line ? line + " " + words[i] : words[i];
-    if (ctx.measureText(test).width > maxW && line) { lines.push(line); line = words[i]; }
-    else line = test;
+    const t = line ? line + " " + words[i] : words[i];
+    if (ctx.measureText(t).width > maxW && line) {
+      lines.push(line); line = words[i];
+      if (lines.length === max) return lines;
+    } else line = t;
   }
-  if (line) lines.push(line);
+  if (line && lines.length < max) lines.push(line);
   return lines;
 }
 
-function drawRoom(glow) {
-  const g = x2.createLinearGradient(0, 0, 0, SH);
-  g.addColorStop(0, "#0F0F16"); g.addColorStop(1, "#07070B");
+/* --- the set --- */
+function drawSet(now, glow) {
+  // studio wall
+  const g = x2.createLinearGradient(0, 0, SW * 0.4, SH);
+  g.addColorStop(0, "#141320"); g.addColorStop(1, "#08080D");
   x2.fillStyle = g; x2.fillRect(0, 0, SW, SH);
 
-  const dy = SH - 150;
-  x2.fillStyle = "#1C3A3E"; x2.fillRect(60, dy, SW - 120, 100);
-  x2.fillStyle = "#162F33"; x2.fillRect(60, dy + 100, SW - 120, 16);
-  x2.fillStyle = "#24494E"; x2.fillRect(60, dy, SW - 120, 2);
-  x2.fillStyle = "#14292D"; x2.fillRect(120, dy + 20, SW - 240, 68);
-  x2.fillStyle = "#1E3C41"; x2.fillRect(120, dy + 20, SW - 240, 1);
+  // brand panel behind the anchor — the Klaxon Wire card, lit
+  const bx = SW * 0.055, by = 34, bw = SW * 0.40, bh = DESK_Y - 96;
+  const bg = x2.createLinearGradient(bx, by, bx + bw, by + bh);
+  bg.addColorStop(0, "#272248"); bg.addColorStop(0.45, "#4A2247");
+  bg.addColorStop(0.8, "#B3121F"); bg.addColorStop(1, "#E10F1E");
+  x2.fillStyle = bg; x2.fillRect(bx, by, bw, bh);
+  // halftone
+  x2.fillStyle = "rgba(255,255,255,0.10)";
+  for (let yy = by + 5; yy < by + bh; yy += 11)
+    for (let xx = bx + 5; xx < bx + bw; xx += 11) x2.fillRect(xx, yy, 2, 2);
+  // wordmark
+  x2.fillStyle = "rgba(255,255,255,0.94)";
+  x2.font = "400 46px 'Archivo', Helvetica, Arial, sans-serif";
+  x2.fillText("KLAXON", bx + 26, by + bh * 0.46);
+  x2.fillText("WIRE", bx + 26, by + bh * 0.46 + 46);
+
+  // monitor wall, right of the set
+  const mw = SW * 0.40, mx = SW * 0.545, my = 54;
+  drawWallScreen(mx, my, mw, 150, "LIVE ⌁ CONNECTOME", glow, function (px, py, pw, ph) {
+    // spike bars driven by activity
+    const n = 34;
+    for (let i = 0; i < n; i++) {
+      const h = (0.12 + Math.abs(Math.sin(now / 420 + i * 1.7)) * (0.25 + S.act * 0.72)) * ph;
+      x2.fillStyle = i % 5 === 0 ? "rgba(214,40,57,0.85)" : "rgba(232,163,61,0.55)";
+      x2.fillRect(px + 10 + i * ((pw - 20) / n), py + ph - h, (pw - 20) / n - 3, h);
+    }
+  });
+  drawWallScreen(mx, my + 166, mw, 120, "DESK ⌁ CHANNELS", glow, function (px, py, pw, ph) {
+    for (let c = 0; c < 5; c++) {
+      x2.font = "400 9px 'IBM Plex Mono', monospace";
+      x2.fillStyle = "rgba(140,138,153,0.9)";
+      x2.fillText(CHAN[c].toUpperCase(), px + 10, py + 18 + c * 20);
+      x2.fillStyle = "rgba(24,24,34,0.9)"; x2.fillRect(px + 118, py + 10 + c * 20, pw - 132, 9);
+      x2.fillStyle = "#E8A33D"; x2.fillRect(px + 118, py + 10 + c * 20, (pw - 132) * (S.ch[c] || 0), 9);
+    }
+  });
+
+  // floor + desk
+  x2.fillStyle = "#0C0C13"; x2.fillRect(0, DESK_Y - 8, SW, SH - DESK_Y + 8);
+  const dg = x2.createLinearGradient(0, DESK_Y, SW, DESK_Y + 70);
+  dg.addColorStop(0, "#272248"); dg.addColorStop(0.5, "#7A1830"); dg.addColorStop(1, "#E10F1E");
+  x2.fillStyle = dg; x2.fillRect(0, DESK_Y, SW, 70);
+  x2.fillStyle = "rgba(255,255,255,0.10)";
+  for (let yy = DESK_Y + 6; yy < DESK_Y + 70; yy += 11)
+    for (let xx = 6; xx < SW; xx += 11) x2.fillRect(xx, yy, 2, 2);
+  x2.fillStyle = "rgba(255,255,255,0.22)"; x2.fillRect(0, DESK_Y, SW, 2);
+  // desk top surface catching the key light
+  x2.fillStyle = "#15141E"; x2.fillRect(0, DESK_Y - 8, SW, 8);
+
+  // key light from above the set
+  const kl = x2.createRadialGradient(SW * 0.30, -80, 40, SW * 0.30, 120, SH * 0.95);
+  kl.addColorStop(0, "rgba(255,240,225,0.10)"); kl.addColorStop(1, "rgba(255,240,225,0)");
+  x2.fillStyle = kl; x2.fillRect(0, 0, SW, SH);
 }
 
-function drawMonitor(now, glow) {
-  const mw = 400, mh = 236, mx = SW * 0.56, my = SH - 420;
-
-  x2.fillStyle = "#0C1416"; x2.fillRect(mx + mw / 2 - 18, my + mh, 36, 62);
-  x2.fillStyle = "#101D20"; x2.fillRect(mx + mw / 2 - 72, my + mh + 62, 144, 12);
-  x2.fillStyle = "#0A0A0E"; x2.fillRect(mx - 9, my - 9, mw + 18, mh + 18);
-  x2.fillStyle = "#05050A"; x2.fillRect(mx, my, mw, mh);
-
+function drawWallScreen(x, y, w, h, label, glow, inner) {
+  x2.fillStyle = "#07070C"; x2.fillRect(x - 5, y - 5, w + 10, h + 10);
+  x2.fillStyle = "#0C0C14"; x2.fillRect(x, y, w, h);
+  x2.fillStyle = "#15151F"; x2.fillRect(x, y, w, 18);
+  x2.fillStyle = "#D62839"; x2.fillRect(x, y, 3, 18);
+  x2.font = "600 9px 'IBM Plex Mono', monospace";
+  x2.fillStyle = "#5C5A68"; x2.fillText(label, x + 10, y + 12);
   x2.save();
-  x2.beginPath(); x2.rect(mx, my, mw, mh); x2.clip();
-
-  x2.fillStyle = "#101018"; x2.fillRect(mx, my, mw, 22);
-  x2.fillStyle = "#D62839"; x2.fillRect(mx, my, 4, 22);
-  x2.font = "600 11px 'IBM Plex Mono', monospace";
-  x2.fillStyle = "#8C8A99";
-  x2.fillText("KLAXON WIRE  ⌁  DESK", mx + 13, my + 15);
-  x2.fillStyle = S.verdict ? (S.verdict === "WIRE IT" ? "#D62839" : "#5E6B84") : "#E8A33D";
-  x2.fillText(S.verdict || "READING", mx + mw - 86, my + 15);
-
-  x2.font = "500 13px 'IBM Plex Mono', monospace";
-  x2.fillStyle = "#E8E6E1";
-  const lines = wrapMono(x2, S.headline || "…", mw - 26);
-  for (let i = 0; i < lines.length && i < 4; i++) x2.fillText(lines[i], mx + 13, my + 48 + i * 18);
-
-  const by = my + 48 + Math.min(lines.length, 4) * 18 + 14;
-  for (let c = 0; c < 5; c++) {
-    x2.font = "400 9.5px 'IBM Plex Mono', monospace";
-    x2.fillStyle = "#5C5A68";
-    x2.fillText(CHAN[c].toUpperCase(), mx + 13, by + c * 15 + 8);
-    x2.fillStyle = "#181822"; x2.fillRect(mx + 158, by + c * 15 + 1, mw - 180, 8);
-    x2.fillStyle = "#E8A33D"; x2.fillRect(mx + 158, by + c * 15 + 1, (mw - 180) * S.ch[c], 8);
-  }
-
-  x2.fillStyle = "rgba(0,0,0,0.16)";
-  for (let sy = 0; sy < mh; sy += 3) x2.fillRect(mx, my + sy, mw, 1);
-  x2.fillStyle = "rgba(90,170,210," + (0.03 + glow * 0.05).toFixed(3) + ")";
-  x2.fillRect(mx, my, mw, mh);
+  x2.beginPath(); x2.rect(x, y + 18, w, h - 18); x2.clip();
+  inner(x, y + 18, w, h - 18);
   x2.restore();
-
-  x2.fillStyle = "#0E1A1D"; x2.fillRect(mx - 32, SH - 128, 320, 44);
-  x2.fillStyle = "#16292D";
-  for (let kr = 0; kr < 3; kr++)
-    for (let kc = 0; kc < 18; kc++)
-      x2.fillRect(mx - 22 + kc * 17, SH - 120 + kr * 13, 13, 9);
-
-  const sg = x2.createRadialGradient(mx + mw / 2, my + mh, 20, mx + mw / 2, my + mh, 400);
-  sg.addColorStop(0, "rgba(90,170,210," + (0.10 + glow * 0.10).toFixed(3) + ")");
-  sg.addColorStop(1, "rgba(90,170,210,0)");
-  x2.fillStyle = sg; x2.fillRect(0, 0, SW, SH);
+  x2.fillStyle = "rgba(0,0,0,0.18)";
+  for (let sy = 0; sy < h; sy += 3) x2.fillRect(x, y + sy, w, 1);
+  x2.fillStyle = "rgba(110,180,215," + (0.02 + glow * 0.035).toFixed(3) + ")";
+  x2.fillRect(x, y, w, h);
 }
 
-function drawFly(now, glow) {
-  const cx = SW * 0.26, fy = SH - 236 + Math.sin(now / 900) * 2.2;
+/* --- the anchor --- */
+function drawAnchor(now, glow) {
+  const cx = SW * 0.255, baseY = DESK_Y + 10;
+  if (flyReady) {
+    const h = 300, w = h * (flySprite.width / flySprite.height || 1.3);
+    x2.save();
+    x2.globalAlpha = 0.35;
+    x2.filter = "blur(6px)";
+    x2.drawImage(flySprite, cx - w / 2 + 8, baseY - h + 14, w, h);
+    x2.restore();
+    x2.drawImage(flySprite, cx - w / 2, baseY - h + Math.sin(now / 900) * 3, w, h);
+    return;
+  }
+  drawVectorFly(cx, baseY - 74 + Math.sin(now / 900) * 2.4, glow);
+}
+
+function drawVectorFly(cx, fy, glow) {
   x2.save();
   x2.translate(cx, fy);
-
-  x2.fillStyle = "rgba(0,0,0,0.42)";
-  x2.beginPath(); x2.ellipse(12, 92, 112, 15, 0, 0, Math.PI * 2); x2.fill();
-
   x2.strokeStyle = "#5E7F52"; x2.lineWidth = 5.5; x2.lineCap = "butt";
-  const legs = [[58,32,112,86],[28,38,58,92],[-32,36,-56,90]];
+  const legs = [[58,32,110,80],[28,38,56,84],[-32,36,-56,82]];
   for (let L = 0; L < legs.length; L++) {
     const a = legs[L];
     x2.beginPath(); x2.moveTo(a[0], a[1]);
     x2.lineTo(a[0] + (a[2]-a[0]) * 0.6, a[1] + (a[3]-a[1]) * 0.3);
     x2.lineTo(a[2], a[3]); x2.stroke();
   }
-
   const ab = x2.createLinearGradient(-10, -44, 86, 64);
   ab.addColorStop(0, "#A8C39A"); ab.addColorStop(0.55, "#7EA06E"); ab.addColorStop(1, "#42613A");
   x2.fillStyle = ab;
-  x2.beginPath(); x2.ellipse(58, 18, 90, 54, -0.20, 0, Math.PI * 2); x2.fill();
+  x2.beginPath(); x2.ellipse(58, 18, 88, 52, -0.20, 0, Math.PI * 2); x2.fill();
   x2.strokeStyle = "rgba(32,54,26,0.5)"; x2.lineWidth = 4;
   for (let b = 0; b < 4; b++) {
     x2.beginPath();
-    x2.ellipse(58, 18, 90 - b * 18, 54 - b * 10, -0.20, Math.PI * 0.16, Math.PI * 0.90);
+    x2.ellipse(58, 18, 88 - b * 18, 52 - b * 10, -0.20, Math.PI * 0.16, Math.PI * 0.90);
     x2.stroke();
   }
-
-  const flick = Math.sin(now / 300) * 0.035 + S.act * 0.05;
+  const flick = Math.sin(now0 / 300) * 0.035 + S.act * 0.06;
   for (let wI = 0; wI < 2; wI++) {
     x2.save();
     x2.rotate(-0.22 - wI * 0.14 + flick * (wI ? 1 : -1));
     x2.fillStyle = wI ? "rgba(214,232,226,0.13)" : "rgba(224,240,236,0.21)";
     x2.strokeStyle = "rgba(226,244,240,0.26)"; x2.lineWidth = 1.5;
-    x2.beginPath(); x2.ellipse(66, -34, 116, 32, -0.08, 0, Math.PI * 2);
+    x2.beginPath(); x2.ellipse(64, -34, 112, 31, -0.08, 0, Math.PI * 2);
     x2.fill(); x2.stroke();
     x2.restore();
   }
-
   const th = x2.createLinearGradient(-42, -42, 22, 32);
   th.addColorStop(0, "#BBD4AC"); th.addColorStop(1, "#5C7E50");
   x2.fillStyle = th;
-  x2.beginPath(); x2.ellipse(-10, 10, 62, 48, -0.10, 0, Math.PI * 2); x2.fill();
+  x2.beginPath(); x2.ellipse(-10, 10, 60, 46, -0.10, 0, Math.PI * 2); x2.fill();
   x2.fillStyle = "rgba(30,48,24,0.32)";
-  x2.beginPath(); x2.ellipse(0, 6, 33, 33, 0, 0, Math.PI * 2); x2.fill();
-  x2.strokeStyle = "rgba(28,44,22,0.55)"; x2.lineWidth = 2;
-  for (let br = 0; br < 7; br++) {
-    const ba = -1.9 + br * 0.26;
-    x2.beginPath();
-    x2.moveTo(-10 + Math.cos(ba) * 47, 10 + Math.sin(ba) * 36);
-    x2.lineTo(-10 + Math.cos(ba) * 62, 10 + Math.sin(ba) * 49);
-    x2.stroke();
-  }
-
+  x2.beginPath(); x2.ellipse(0, 6, 32, 32, 0, 0, Math.PI * 2); x2.fill();
   x2.fillStyle = "#9FBB90";
-  x2.beginPath(); x2.ellipse(-78, -12, 44, 40, 0, 0, Math.PI * 2); x2.fill();
-
+  x2.beginPath(); x2.ellipse(-76, -12, 43, 39, 0, 0, Math.PI * 2); x2.fill();
   for (let e = 0; e < 2; e++) {
-    const ex = -95 + e * 32, ey = -28 + e * 17;
-    const eg = x2.createRadialGradient(ex - 8, ey - 10, 3, ex, ey, 29);
+    const ex = -93 + e * 31, ey = -28 + e * 17;
+    const eg = x2.createRadialGradient(ex - 8, ey - 10, 3, ex, ey, 28);
     eg.addColorStop(0, "#FF6E56"); eg.addColorStop(0.5, "#D6301F"); eg.addColorStop(1, "#6E1208");
     x2.fillStyle = eg;
-    x2.beginPath(); x2.ellipse(ex, ey, 28, 25, -0.18, 0, Math.PI * 2); x2.fill();
+    x2.beginPath(); x2.ellipse(ex, ey, 27, 24, -0.18, 0, Math.PI * 2); x2.fill();
     x2.fillStyle = "rgba(130,206,228," + (0.34 + glow * 0.42).toFixed(3) + ")";
-    x2.fillRect(ex + 5, ey + 1, 15, 11);
+    x2.fillRect(ex + 5, ey + 1, 14, 10);
   }
-
   x2.strokeStyle = "#5C7E50"; x2.lineWidth = 3.5;
-  const tw = Math.sin(now / 620) * 3;
-  x2.beginPath(); x2.moveTo(-99, -40); x2.lineTo(-114, -64 + tw); x2.stroke();
-  x2.beginPath(); x2.moveTo(-80, -47); x2.lineTo(-86, -73 + tw); x2.stroke();
-
-  const tap = (Math.sin(now / 150) > 0.7 - S.act * 0.5) ? 5 : 0;
-  x2.strokeStyle = "#5E7F52"; x2.lineWidth = 5.5;
-  x2.beginPath(); x2.moveTo(-56, 24); x2.lineTo(-26, 66); x2.lineTo(16, 80 + tap); x2.stroke();
-  x2.beginPath(); x2.moveTo(-42, 32); x2.lineTo(-4, 74); x2.lineTo(38, 84 - tap); x2.stroke();
-
+  const tw = Math.sin(now0 / 620) * 3;
+  x2.beginPath(); x2.moveTo(-97, -40); x2.lineTo(-112, -63 + tw); x2.stroke();
+  x2.beginPath(); x2.moveTo(-79, -46); x2.lineTo(-85, -71 + tw); x2.stroke();
   x2.restore();
 }
 
+/* --- lower third + ticker --- */
+function drawLowerThird() {
+  const h = 52, pad = 14;
+  x2.fillStyle = "rgba(8,8,13,0.90)";
+  x2.fillRect(0, LOWER_Y, SW, h);
+  const g = x2.createLinearGradient(0, LOWER_Y, 190, LOWER_Y + h);
+  g.addColorStop(0, "#272248"); g.addColorStop(1, "#E10F1E");
+  x2.fillStyle = g; x2.fillRect(0, LOWER_Y, 176, h);
+  x2.fillStyle = "rgba(255,255,255,0.12)";
+  for (let yy = LOWER_Y + 5; yy < LOWER_Y + h; yy += 10)
+    for (let xx = 5; xx < 176; xx += 10) x2.fillRect(xx, yy, 2, 2);
+  x2.fillStyle = "#fff";
+  x2.font = "400 17px 'Archivo', Helvetica, Arial, sans-serif";
+  x2.fillText("KLAXON", 16, LOWER_Y + 23);
+  x2.fillText("WIRE", 16, LOWER_Y + 41);
+
+  const badge = S.verdict || "READING";
+  x2.fillStyle = S.verdict === "WIRE IT" ? "#D62839"
+               : S.verdict ? "#2A3346" : "#3A2E14";
+  x2.fillRect(190, LOWER_Y + 9, 92, 17);
+  x2.font = "600 10px 'IBM Plex Mono', monospace";
+  x2.fillStyle = S.verdict === "WIRE IT" ? "#0B0B0F"
+               : S.verdict ? "#8FA0BC" : "#E8A33D";
+  x2.fillText(badge, 197, LOWER_Y + 21);
+
+  x2.font = "700 17px 'Archivo', Helvetica, Arial, sans-serif";
+  x2.fillStyle = "#E8E6E1";
+  const line = wrapText(x2, S.headline || "Waiting for the wire…", SW - 300, 1)[0] || "";
+  x2.fillText(line, 292, LOWER_Y + 23);
+  x2.font = "400 11px 'IBM Plex Mono', monospace";
+  x2.fillStyle = "#8C8A99";
+  x2.fillText((S.source || "").toUpperCase() + "   wire " + S.wireHz.toFixed(1) +
+              " Hz · skip " + S.skipHz.toFixed(1) + " Hz", 292, LOWER_Y + 42);
+  x2.fillStyle = "#E10F1E"; x2.fillRect(0, LOWER_Y, SW, 2);
+}
+
+let tickX = 0;
+function drawTicker(dt) {
+  const h = 30;
+  x2.fillStyle = "#0B0B10"; x2.fillRect(0, TICK_Y, SW, h);
+  x2.fillStyle = "#D62839"; x2.fillRect(0, TICK_Y, 104, h);
+  x2.font = "600 11px 'IBM Plex Mono', monospace";
+  x2.fillStyle = "#0B0B0F"; x2.fillText("ON THE WIRE", 12, TICK_Y + 19);
+
+  x2.save();
+  x2.beginPath(); x2.rect(104, TICK_Y, SW - 104, h); x2.clip();
+  x2.font = "500 13px 'Archivo', Helvetica, Arial, sans-serif";
+  const items = S.ticker.length ? S.ticker : ["Waiting for the wire"];
+  const gap = 46;
+  let widths = 0;
+  for (let i = 0; i < items.length; i++) widths += x2.measureText(items[i]).width + gap;
+  if (widths < 1) widths = 1;
+  tickX -= dt * 0.055;
+  if (tickX < -widths) tickX += widths;
+  for (let pass = 0; pass < 2; pass++) {
+    let x = 116 + tickX + pass * widths;
+    for (let i = 0; i < items.length; i++) {
+      const w = x2.measureText(items[i]).width;
+      if (x + w > 104 && x < SW) {
+        x2.fillStyle = "#D62839"; x2.fillRect(x - 16, TICK_Y + 13, 6, 6);
+        x2.fillStyle = "#D8D6D1"; x2.fillText(items[i], x, TICK_Y + 20);
+      }
+      x += w + gap;
+    }
+  }
+  x2.restore();
+  x2.fillStyle = "#1F1F29"; x2.fillRect(0, TICK_Y, SW, 1);
+}
+
+let now0 = 0, lastT = 0;
 function scene(now) {
+  const dt = Math.min(now - lastT, 60); lastT = now; now0 = now;
   const glow = 0.5 + 0.5 * Math.sin(now / 520);
-  drawRoom(glow);
-  drawMonitor(now, glow);
-  drawFly(now, glow);
+  drawSet(now, glow);
+  drawAnchor(now, glow);
+  drawLowerThird();
+  drawTicker(dt);
+  // set vignette
+  const v = x2.createRadialGradient(SW / 2, SH / 2, SH * 0.35, SW / 2, SH / 2, SH * 1.05);
+  v.addColorStop(0, "rgba(0,0,0,0)"); v.addColorStop(1, "rgba(0,0,0,0.55)");
+  x2.fillStyle = v; x2.fillRect(0, 0, SW, SH);
   requestAnimationFrame(scene);
 }
 requestAnimationFrame(scene);
@@ -521,7 +622,7 @@ fetch("/api/meta").then(function (r) { return r.json(); })
 
 function applyState(s) {
   if (s.story) {
-    S.headline = s.story.headline; S.ch = s.story.ch;
+    S.headline = s.story.headline; S.ch = s.story.ch; S.source = s.story.source;
     $("w-head").textContent = s.story.headline;
     $("w-org").textContent = s.story.source;
     $("w-src").textContent = s.story.source;
@@ -543,6 +644,7 @@ function applyState(s) {
   $("t-wire").textContent = s.wireHz.toFixed(1);
   $("t-skip").textContent = s.skipHz.toFixed(1);
   $("qd").textContent = s.queued + " queued";
+  if (s.ticker && s.ticker.length) S.ticker = s.ticker;
 
   // each packet carries the indices of neurons that actually fired, 3 bytes
   // each, so exactly those points light rather than a smear across bins
