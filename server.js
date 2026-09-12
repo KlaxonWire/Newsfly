@@ -87,9 +87,21 @@ function loadIds() {
  * ------------------------------------------------------------------ */
 
 const EDGES_BIN = path.join(DATA, "edges.bin");
-const CODEX_URL =
-  "https://codex.flywire.ai/api/download_resource" +
-  "?data_product=connections&dataset=fafb&api_token=";
+
+// Codex names its download resources by data_product. The download page's
+// anchor for "Connections (Filtered)" is #collapseconnections_princeton, so
+// that is the first name tried; the rest are fallbacks in case the key moves.
+const CODEX_PRODUCTS = [
+  "connections_princeton",
+  "connections",
+  "connections_filtered",
+  "connections_no_threshold",
+];
+function codexUrl(product, token) {
+  return "https://codex.flywire.ai/api/download_resource" +
+         "?data_product=" + encodeURIComponent(product) +
+         "&dataset=fafb&api_token=" + encodeURIComponent(token);
+}
 
 let rowPtr, colIdx, colW;   // CSR: rowPtr[i]..rowPtr[i+1] index into colIdx/colW
 
@@ -102,11 +114,23 @@ async function buildEdges(idMap) {
     );
   }
   console.log("[edges] downloading the connection table from Codex…");
-  const res = await fetch(CODEX_URL + encodeURIComponent(token));
-  if (!res.ok) {
+  let res = null;
+  for (const product of CODEX_PRODUCTS) {
+    let r;
+    try {
+      r = await fetch(codexUrl(product, token));
+    } catch (e) {
+      console.warn(`[edges] data_product=${product} -> request failed`);
+      continue;
+    }
+    console.log(`[edges] data_product=${product} -> HTTP ${r.status}`);
+    if (r.ok) { res = r; break; }
+  }
+  if (!res) {
     throw new Error(
-      `Codex returned ${res.status}. Check CODEX_TOKEN, or download ` +
-      `"Connections (Filtered)" by hand and commit it as data/connections.csv.gz.`
+      "Codex refused every data_product name tried: " + CODEX_PRODUCTS.join(", ") + ".\n" +
+      "Open codex.flywire.ai/api/download, expand Connections (Filtered), and send " +
+      "the real download link so the name can be corrected."
     );
   }
 
