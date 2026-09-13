@@ -336,19 +336,68 @@ const FEEDS = [
   { name: "Sky News", url: "https://feeds.skynews.com/feeds/rss/world.xml" },
 ];
 
-const HARD = /\b(kill|killed|dead|death|toll|fatal|casualt)\w*/i;
-const HARDWARE = /\b(missile|drone|tank|jet|fighter|warship|artillery|strike|airbase|air base|submarine|helicopter)\w*/i;
-const VISUAL = /\b(video|footage|cctv|filmed|caught on camera|watch|dashcam)\w*/i;
-const US = /\b(u\.?s\.?|america|american|washington|trump|pentagon|florida|texas|california|new york)\b/i;
+// What a wire desk actually weighs. Magnitude first — whether a thing matters
+// does not depend on whether somebody happened to film it.
+function rx(parts) { return new RegExp("\\b(" + parts.join("|") + ")\\w*", "i"); }
+
+const DEATH = rx(["kill", "dead", "death", "die", "died", "dies", "fatal", "casualt",
+                  "massacre", "slain", "executed", "toll", "perish", "bodies"]);
+const HARM  = rx(["wound", "injur", "missing", "displac", "evacuat", "strand", "trap",
+                  "hostage", "homeless", "starv", "famine", "refugee", "hospitalis",
+                  "hospitaliz", "critical condition"]);
+const SCALE = rx([
+  "war", "invasion", "invade", "coup", "uprising", "revolt", "revolution", "ceasefire",
+  "airstrike", "offensive", "occupation", "annex", "genocide", "siege", "bomb",
+  "missile", "rocket", "drone", "troop", "militant", "insurgen", "terror",
+  "earthquake", "quake", "tsunami", "hurricane", "typhoon", "cyclone", "storm",
+  "wildfire", "flood", "landslide", "erupt", "drought", "avalanche", "blizzard",
+  "outbreak", "epidemic", "pandemic", "virus", "infect", "spread", "contagio",
+  "collapse", "derail", "crash", "explosion", "explode", "blast", "shooting", "shot",
+  "attack", "assault", "hijack", "kidnap", "abduct", "raid", "strike",
+  "sanction", "impeach", "resign", "oust", "indict", "convict", "verdict", "arrest",
+  "election", "referendum", "protest", "riot", "crackdown", "expel", "deport",
+  "default", "recession", "bailout", "blackout", "shutdown", "bankrupt", "layoff",
+  "inflation", "tariff", "emergency", "crisis", "warning", "alert", "ban", "seize",
+]);
+const INSTIT = rx([
+  "un", "nato", "who", "imf", "opec", "eu", "fed", "central bank", "supreme court",
+  "parliament", "congress", "senate", "president", "prime minister", "chancellor",
+  "pope", "army", "navy", "military", "police", "government", "minister", "governor",
+  "regulator", "court", "authorities", "ministry", "agency",
+]);
+const VISUAL = rx(["video", "footage", "cctv", "film", "caught on camera", "watch",
+                   "dashcam", "images show", "seen on", "captured on", "livestream"]);
+const USREL = rx(["u\\.s", "us ", "america", "washington", "trump", "pentagon",
+                  "white house", "congress", "new york", "california", "texas",
+                  "florida", "chicago", "wall street", "nasdaq", "dollar"]);
+
+function bigNumber(title) {
+  if (/\b\d{3,}\b/.test(title)) return 1;
+  if (/\b(thousands|millions|hundreds|dozens|scores)\b/i.test(title)) return 0.8;
+  const m = title.match(/\b(\d{1,2})\b/);
+  return m ? Math.min(0.65, parseInt(m[1], 10) / 30) : 0;
+}
 
 function scoreStory(title, ageHours) {
-  const num = (title.match(/\b\d{1,4}\b/) || [null])[0];
+  const death = DEATH.test(title), harm = HARM.test(title);
+  const num = bigNumber(title);
+
+  const humanCost = death ? Math.min(1, 0.70 + num * 0.30)
+                  : harm  ? Math.min(1, 0.45 + num * 0.35)
+                  : num * 0.20;
+
+  let scale = 0;
+  if (SCALE.test(title)) scale += 0.62;
+  if (INSTIT.test(title)) scale += 0.22;
+  if (death) scale += 0.16;
+  scale += num * 0.22;
+
   return [
-    VISUAL.test(title) ? 0.9 : 0.25,                                  // footage
-    HARD.test(title) ? (num ? 0.95 : 0.7) : 0.05,                     // casualties
-    HARDWARE.test(title) ? 0.9 : 0.05,                                // hardware
-    US.test(title) ? 0.9 : 0.2,                                       // US relevance
-    Math.max(0, 1 - ageHours / 24),                                   // recency
+    VISUAL.test(title) ? 0.92 : 0.20,
+    Math.min(1, humanCost),
+    Math.min(1, scale),
+    USREL.test(title) ? 0.88 : 0.20,
+    Math.max(0, 1 - ageHours / 20),
   ];
 }
 
@@ -421,7 +470,12 @@ function applyStimulus(story) {
   // case FOR running it — footage, casualties, hardware. Right sensory neurons
   // carry the case against: how little there is to show. Everything between
   // the sensory neurons and the descending ones is the real connectome.
-  const show = (story.ch[0] * 0.45 + story.ch[1] * 0.35 + story.ch[2] * 0.20);
+  // scale and human cost decide whether it is news; footage only adds to it
+  const raw = story.ch[2] * 0.38 + story.ch[1] * 0.32 +
+              story.ch[0] * 0.16 + story.ch[3] * 0.14;
+  // the raw weights land in roughly 0.05-0.50; stretch that onto 0-1 so the
+  // difference between a recipe and a massacre actually reaches the neurons
+  const show = Math.max(0, Math.min(1, (raw - 0.05) / 0.45));
   const pass = 1 - show;
   const band = Math.floor(SENSORY.length / 5);
 
