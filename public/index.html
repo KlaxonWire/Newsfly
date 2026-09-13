@@ -60,6 +60,14 @@ body{margin:0;background:var(--ground);color:var(--ink);
 #stagewrap{position:relative;background:#07070B;border-bottom:1px solid var(--soft);line-height:0}
 #skyframe{position:absolute;left:1.6%;top:2.5%;width:96.8%;height:60%;border:0;z-index:0;background:#05050A}
 #skyframe iframe{width:100%;height:100%;border:0;display:block}
+/* browsers only allow autoplay when muted, so sound needs one real click */
+#unmute{position:absolute;right:3.4%;top:5%;z-index:2;display:none;align-items:center;gap:7px;
+        padding:8px 12px;border:1px solid rgba(255,255,255,.38);background:rgba(10,10,15,.78);
+        color:#fff;cursor:pointer;font-family:"IBM Plex Mono",monospace;font-size:11px;
+        letter-spacing:.12em;text-transform:uppercase;backdrop-filter:blur(3px)}
+#unmute.on{display:inline-flex}
+#unmute:hover{background:var(--red);border-color:var(--red)}
+#unmute svg{width:13px;height:13px;fill:currentColor}
 #stage{display:block;position:relative;z-index:1;width:100%;height:auto;
        background:transparent;pointer-events:none}
 #glwrap{position:relative;background:#07070B;border-bottom:1px solid var(--soft)}
@@ -174,6 +182,10 @@ body{margin:0;background:var(--ground);color:var(--ink);
         <div class="head"><span class="lbl">Live view ⌁ fly</span><span class="lbl" id="stagestat">—</span></div>
         <div id="stagewrap">
           <div id="skyframe"></div>
+          <button id="unmute" type="button" aria-label="Turn the sound on">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 4V5L7 9H3Zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4Zm-2.5-8.8v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6Z"/></svg>
+            Sound
+          </button>
           <canvas id="stage" width="1000" height="560" aria-label="A fruit fly at a desk watching the news"></canvas>
         </div>
       </div>
@@ -405,13 +417,24 @@ function mountStream() {
     events: {
       onReady: function (e) { e.target.mute(); e.target.playVideo(); streamWatchdog(); },
       onStateChange: function (e) {
-        if (e.data === YT.PlayerState.PLAYING) { streamPlaying = true; clearTimeout(wdTimer); }
+        if (e.data === YT.PlayerState.PLAYING) {
+          streamPlaying = true; clearTimeout(wdTimer);
+          if (ytPlayer.isMuted && ytPlayer.isMuted()) $("unmute").classList.add("on");
+        }
       },
       onError: function () { nextStream(); }
     }
   });
 }
 window.onYouTubeIframeAPIReady = function () { mountStream(); };
+
+$("unmute").addEventListener("click", function () {
+  if (!ytPlayer) return;
+  ytPlayer.unMute();
+  ytPlayer.setVolume(70);
+  ytPlayer.playVideo();
+  this.classList.remove("on");
+});
 (function () {
   const s = document.createElement("script");
   s.src = "https://www.youtube.com/iframe_api";
