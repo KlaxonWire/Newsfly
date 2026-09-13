@@ -59,6 +59,7 @@ body{margin:0;background:var(--ground);color:var(--ink);
    punches the screen rectangle transparent so the stream shows through it. */
 #stagewrap{position:relative;background:#07070B;border-bottom:1px solid var(--soft);line-height:0}
 #skyframe{position:absolute;left:1.6%;top:2.5%;width:96.8%;height:60%;border:0;z-index:0;background:#05050A}
+#skyframe iframe{width:100%;height:100%;border:0;display:block}
 #stage{display:block;position:relative;z-index:1;width:100%;height:auto;
        background:transparent;pointer-events:none}
 #glwrap{position:relative;background:#07070B;border-bottom:1px solid var(--soft)}
@@ -172,10 +173,7 @@ body{margin:0;background:var(--ground);color:var(--ink);
       <div class="panel">
         <div class="head"><span class="lbl">Live view ⌁ fly</span><span class="lbl" id="stagestat">—</span></div>
         <div id="stagewrap">
-          <iframe id="skyframe" title="Sky News live"
-                  src="https://www.youtube.com/embed/live_stream?channel=UCoMdktPbSTixAyNGwb-UYkQ&autoplay=1&mute=1&playsinline=1&rel=0"
-                  allow="autoplay; encrypted-media; picture-in-picture"
-                  allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+          <div id="skyframe"></div>
           <canvas id="stage" width="1000" height="560" aria-label="A fruit fly at a desk watching the news"></canvas>
         </div>
       </div>
@@ -364,6 +362,79 @@ function buildScan(w, h) {
   for (let y = 0; y < h; y += 3) c.fillRect(0, y, w, 1);
 }
 
+/* ------------------------------------------------------------------ *
+ * the live stream
+ *
+ * Broadcasters rotate their 24/7 live video and some of them switch
+ * embedding off without warning, so rather than trusting one id the page
+ * walks a list: load one, and if the player errors or hasn't reached
+ * PLAYING within nine seconds, move to the next. ?stream=VIDEOID at the
+ * end of the url jumps the queue, which is how you test a new id without
+ * a redeploy.
+ * ------------------------------------------------------------------ */
+const STREAM_IDS = (function () {
+  const q = new URLSearchParams(location.search).get("stream");
+  const list = [
+    "xDWQ3LkccY8",   // Sky News — Watch Sky News
+    "XOacA3RYrXk"    // Sky News — Live
+  ];
+  return q ? [q].concat(list) : list;
+})();
+
+let ytPlayer = null, streamIx = 0, streamOk = true, streamPlaying = false, wdTimer = null;
+
+function streamWatchdog() {
+  clearTimeout(wdTimer);
+  wdTimer = setTimeout(function () { if (!streamPlaying) nextStream(); }, 9000);
+}
+function nextStream() {
+  clearTimeout(wdTimer);
+  streamIx++;
+  if (streamIx >= STREAM_IDS.length) { streamOk = false; return; }
+  streamPlaying = false;
+  if (ytPlayer && ytPlayer.loadVideoById) {
+    ytPlayer.loadVideoById(STREAM_IDS[streamIx]);
+    streamWatchdog();
+  } else mountStream();
+}
+function mountStream() {
+  streamOk = true; streamPlaying = false;
+  ytPlayer = new YT.Player("skyframe", {
+    videoId: STREAM_IDS[streamIx],
+    playerVars: { autoplay: 1, mute: 1, playsinline: 1, rel: 0, modestbranding: 1 },
+    events: {
+      onReady: function (e) { e.target.mute(); e.target.playVideo(); streamWatchdog(); },
+      onStateChange: function (e) {
+        if (e.data === YT.PlayerState.PLAYING) { streamPlaying = true; clearTimeout(wdTimer); }
+      },
+      onError: function () { nextStream(); }
+    }
+  });
+}
+window.onYouTubeIframeAPIReady = function () { mountStream(); };
+(function () {
+  const s = document.createElement("script");
+  s.src = "https://www.youtube.com/iframe_api";
+  document.head.appendChild(s);
+  // if the api never arrives (blocked, offline) fall back to the set plate
+  setTimeout(function () { if (!ytPlayer) streamOk = false; }, 12000);
+})();
+
+/* shown in place of the stream when nothing in the list will play */
+function drawOffline() {
+  x2.fillStyle = "#07070C";
+  x2.fillRect(SCR.x, SCR.y, SCR.w, SCR.h);
+  const cx = SCR.x + SCR.w / 2, cy = SCR.y + SCR.h / 2;
+  x2.textAlign = "center";
+  x2.font = "400 26px 'Archivo', Helvetica, Arial, sans-serif";
+  x2.fillStyle = "#2E2C38";
+  x2.fillText("KLAXON WIRE", cx, cy - 6);
+  x2.font = "400 11px 'IBM Plex Mono', monospace";
+  x2.fillStyle = "#46444F";
+  x2.fillText("STREAM OFFLINE", cx, cy + 20);
+  x2.textAlign = "left";
+}
+
 /* the live screen: everything inside SCR is cut out of the canvas so the
    youtube embed behind it is what you actually see. */
 function punchScreen() {
@@ -507,7 +578,7 @@ function scene(now) {
   x2.clearRect(0, 0, SW, SH);
   x2.drawImage(backLayer, 0, 0);
   drawSpill(glow);
-  punchScreen();
+  if (streamOk) punchScreen(); else drawOffline();
   drawAnchor(now, glow);
   x2.drawImage(frontLayer, 0, TABLE_FRONT);
   drawLowerThird();
