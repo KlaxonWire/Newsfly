@@ -517,7 +517,10 @@ function broadcast() {
 
 const MIME = { ".html": "text/html; charset=utf-8", ".js": "text/javascript",
                ".css": "text/css", ".bin": "application/octet-stream",
-               ".json": "application/json" };
+               ".json": "application/json", ".png": "image/png",
+               ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp",
+               ".svg": "image/svg+xml", ".ico": "image/x-icon",
+               ".mp4": "video/mp4", ".woff2": "font/woff2" };
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
