@@ -55,7 +55,12 @@ body{margin:0;background:var(--ground);color:var(--ink);
 .panel > .head{display:flex;justify-content:space-between;gap:10px;padding:8px 12px;
                border-bottom:1px solid var(--soft)}
 
-#stage{display:block;width:100%;height:auto;background:#07070B;border-bottom:1px solid var(--soft)}
+/* the live view: a youtube live embed sits behind the canvas, and the canvas
+   punches the screen rectangle transparent so the stream shows through it. */
+#stagewrap{position:relative;background:#07070B;border-bottom:1px solid var(--soft);line-height:0}
+#skyframe{position:absolute;left:1.6%;top:2.5%;width:96.8%;height:60%;border:0;z-index:0;background:#05050A}
+#stage{display:block;position:relative;z-index:1;width:100%;height:auto;
+       background:transparent;pointer-events:none}
 #glwrap{position:relative;background:#07070B;border-bottom:1px solid var(--soft)}
 #gl{display:block;width:100%;height:340px}
 #glnote{position:absolute;left:10px;bottom:8px;pointer-events:none}
@@ -166,7 +171,13 @@ body{margin:0;background:var(--ground);color:var(--ink);
     <div class="col">
       <div class="panel">
         <div class="head"><span class="lbl">Live view ⌁ fly</span><span class="lbl" id="stagestat">—</span></div>
-        <canvas id="stage" width="1000" height="560" aria-label="A fruit fly at a desk reading the wire"></canvas>
+        <div id="stagewrap">
+          <iframe id="skyframe" title="Sky News live"
+                  src="https://www.youtube.com/embed/live_stream?channel=UCoMdktPbSTixAyNGwb-UYkQ&autoplay=1&mute=1&playsinline=1&rel=0"
+                  allow="autoplay; encrypted-media; picture-in-picture"
+                  allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+          <canvas id="stage" width="1000" height="560" aria-label="A fruit fly at a desk watching the news"></canvas>
+        </div>
       </div>
 
       <div class="panel" id="readoutpanel">
@@ -269,11 +280,18 @@ const SW = stage.width, SH = stage.height;
 const flySprite = new Image();
 let flyReady = false;
 flySprite.onload = function () { flyReady = true; };
-flySprite.src = "/fly.png";
+flySprite.src = "/fly_rear.png";
 
-const DESK_Y = SH - 168;          // top edge of the anchor desk
-const LOWER_Y = SH - 116;         // lower third
-const TICK_Y = SH - 46;           // ticker strip
+/* the screen rectangle. the canvas is punched transparent here every frame so
+   the youtube live embed underneath shows through; #skyframe in the css is the
+   same rectangle expressed as a percentage of the canvas box. */
+const SCR = { x: 16, y: 14, w: 968, h: 336 };
+
+const TABLE_BACK  = 382;          // far edge of the table top
+const TABLE_FRONT = 436;          // near edge, where the front panel starts
+const LOWER_Y = TABLE_FRONT + 38; // lower third
+const LOWER_H = 60;
+const TICK_Y = LOWER_Y + LOWER_H + 2;
 
 function wrapText(ctx, text, maxW, max) {
   const words = String(text).split(" "); const lines = []; let line = "";
@@ -288,14 +306,11 @@ function wrapText(ctx, text, maxW, max) {
   return lines;
 }
 
-/* --- the set: a dark studio, a wall screen, a table, a fly watching it --- */
+/* --- the set: a dark studio, the live screen, a table, a fly watching it --- */
 
-const TABLE_BACK  = 372;   // far edge of the table top
-const TABLE_FRONT = 448;   // near edge, where the front panel starts
-
-/* The studio, the table and all the halftone dots never change, so they are
-   painted once into two layers and blitted after that — redrawing ~900 tiny
-   rects and four gradients every frame is what made the fly stutter. */
+/* The studio, the bezel, the table and all the halftone dots never change, so
+   they are painted once into two layers and blitted after that — redrawing
+   ~900 tiny rects and four gradients every frame is what made the fly stutter. */
 let backLayer = null, frontLayer = null;
 
 function buildLayers() {
@@ -310,29 +325,33 @@ function buildLayers() {
   fl.addColorStop(0, "rgba(120,90,150,0.10)"); fl.addColorStop(1, "rgba(120,90,150,0)");
   b.fillStyle = fl; b.fillRect(0, 0, SW, SH);
 
+  // the bezel around the live screen
+  b.fillStyle = "#0A0A0F";
+  b.fillRect(SCR.x - 11, SCR.y - 11, SCR.w + 22, SCR.h + 22);
+  b.strokeStyle = "rgba(255,255,255,0.07)"; b.lineWidth = 1;
+  b.strokeRect(SCR.x - 6.5, SCR.y - 6.5, SCR.w + 13, SCR.h + 13);
+
   // table top
   b.beginPath();
-  b.moveTo(SW * 0.14, TABLE_BACK); b.lineTo(SW * 0.86, TABLE_BACK);
+  b.moveTo(SW * 0.16, TABLE_BACK); b.lineTo(SW * 0.84, TABLE_BACK);
   b.lineTo(SW + 40, TABLE_FRONT); b.lineTo(-40, TABLE_FRONT); b.closePath();
   const tg = b.createLinearGradient(0, TABLE_BACK, 0, TABLE_FRONT);
   tg.addColorStop(0, "#241F33"); tg.addColorStop(1, "#12111B");
   b.fillStyle = tg; b.fill();
   b.strokeStyle = "rgba(255,255,255,0.18)"; b.lineWidth = 1.5;
-  b.beginPath(); b.moveTo(SW * 0.14, TABLE_BACK); b.lineTo(SW * 0.86, TABLE_BACK); b.stroke();
+  b.beginPath(); b.moveTo(SW * 0.16, TABLE_BACK); b.lineTo(SW * 0.84, TABLE_BACK); b.stroke();
 
+  const fh = LOWER_Y - TABLE_FRONT;
   frontLayer = document.createElement("canvas");
-  frontLayer.width = SW; frontLayer.height = SH - TABLE_FRONT;
+  frontLayer.width = SW; frontLayer.height = fh;
   const f = frontLayer.getContext("2d");
-  const dg = f.createLinearGradient(0, 0, SW, SH - TABLE_FRONT);
+  const dg = f.createLinearGradient(0, 0, SW, fh);
   dg.addColorStop(0, "#231F42"); dg.addColorStop(0.55, "#6B1428"); dg.addColorStop(1, "#C40D1B");
-  f.fillStyle = dg; f.fillRect(0, 0, SW, SH - TABLE_FRONT);
-  f.fillStyle = "rgba(255,255,255,0.07)";
-  for (let yy = 7; yy < SH - TABLE_FRONT; yy += 12)
-    for (let xx = 7; xx < SW; xx += 12) f.fillRect(xx, yy, 2, 2);
+  f.fillStyle = dg; f.fillRect(0, 0, SW, fh);
+  f.fillStyle = "rgba(255,255,255,0.10)";
+  for (let yy = 7; yy < fh; yy += 11)
+    for (let xx = 7; xx < SW; xx += 11) f.fillRect(xx, yy, 2, 2);
   f.fillStyle = "rgba(255,255,255,0.30)"; f.fillRect(0, 0, SW, 2);
-  f.font = "400 20px 'Archivo', Helvetica, Arial, sans-serif";
-  f.fillStyle = "rgba(255,255,255,0.92)";
-  f.fillText("KLAXON WIRE", 24, 32);
 }
 
 // scanline overlay, also built once
@@ -345,173 +364,98 @@ function buildScan(w, h) {
   for (let y = 0; y < h; y += 3) c.fillRect(0, y, w, 1);
 }
 
-function drawSetOld(now, glow) {
-  // studio
-  const g = x2.createLinearGradient(0, 0, 0, SH);
-  g.addColorStop(0, "#14131C"); g.addColorStop(0.6, "#0B0B11"); g.addColorStop(1, "#070709");
-  x2.fillStyle = g; x2.fillRect(0, 0, SW, SH);
-
-  // floor pool of light behind the table
-  const fl = x2.createRadialGradient(SW * 0.5, TABLE_BACK, 20, SW * 0.5, TABLE_BACK, 520);
-  fl.addColorStop(0, "rgba(120,90,150,0.10)"); fl.addColorStop(1, "rgba(120,90,150,0)");
-  x2.fillStyle = fl; x2.fillRect(0, 0, SW, SH);
+/* the live screen: everything inside SCR is cut out of the canvas so the
+   youtube embed behind it is what you actually see. */
+function punchScreen() {
+  x2.save();
+  x2.globalCompositeOperation = "destination-out";
+  x2.fillStyle = "#000";
+  x2.fillRect(SCR.x, SCR.y, SCR.w, SCR.h);
+  x2.restore();
 }
 
-/* the wall screen the fly is watching */
-function drawScreen(now, glow) {
-  const w = 470, h = 262, x = SW - w - 56, y = 44;
-
-  // mount + bezel
-  x2.fillStyle = "#0A0A0F"; x2.fillRect(x - 10, y - 10, w + 20, h + 20);
-  x2.fillStyle = "#050509"; x2.fillRect(x, y, w, h);
-
-  x2.save();
-  x2.beginPath(); x2.rect(x, y, w, h); x2.clip();
-
-  // brand strap
-  const sg = x2.createLinearGradient(x, y, x + w, y + 26);
-  sg.addColorStop(0, "#272248"); sg.addColorStop(1, "#E10F1E");
-  x2.fillStyle = sg; x2.fillRect(x, y, w, 26);
-  x2.font = "400 13px 'Archivo', Helvetica, Arial, sans-serif";
-  x2.fillStyle = "rgba(255,255,255,0.95)";
-  x2.fillText("KLAXON WIRE", x + 12, y + 18);
-  x2.font = "600 10px 'IBM Plex Mono', monospace";
-  x2.fillStyle = S.verdict ? "#fff" : "rgba(255,255,255,0.75)";
-  x2.fillText(S.verdict || "READING", x + w - 76, y + 18);
-
-  // the story
-  x2.font = "700 19px 'Archivo', Helvetica, Arial, sans-serif";
-  x2.fillStyle = "#F0EEE9";
-  const lines = wrapText(x2, S.headline || "Waiting for the wire…", w - 28, 3);
-  for (let i = 0; i < lines.length; i++) x2.fillText(lines[i], x + 14, y + 62 + i * 25);
-
-  x2.font = "400 11px 'IBM Plex Mono', monospace";
-  x2.fillStyle = "#8C8A99";
-  x2.fillText((S.source || "").toUpperCase(), x + 14, y + 62 + lines.length * 25 + 8);
-
-  // channel meters, low in the frame
-  const by = y + h - 84;
-  for (let c = 0; c < 5; c++) {
-    x2.font = "400 8.5px 'IBM Plex Mono', monospace";
-    x2.fillStyle = "#55535F";
-    x2.fillText(CHAN[c].toUpperCase(), x + 14, by + c * 14 + 7);
-    x2.fillStyle = "#14141C"; x2.fillRect(x + 130, by + c * 14, w - 150, 7);
-    x2.fillStyle = "#E8A33D"; x2.fillRect(x + 130, by + c * 14, (w - 150) * (S.ch[c] || 0), 7);
-  }
-
-  // glass
-  if (!scanLayer) buildScan(w, h);
-  x2.drawImage(scanLayer, x, y);
-  const gl2 = x2.createLinearGradient(x, y, x + w * 0.6, y + h);
-  gl2.addColorStop(0, "rgba(255,255,255,0.045)"); gl2.addColorStop(1, "rgba(255,255,255,0)");
-  x2.fillStyle = gl2; x2.fillRect(x, y, w, h);
-  x2.restore();
-
-  // screen light thrown across the room
-  const spill = x2.createRadialGradient(x, y + h, 20, x, y + h, 620);
-  spill.addColorStop(0, "rgba(120,170,210," + (0.10 + glow * 0.05).toFixed(3) + ")");
+/* the light the screen throws into the room */
+function drawSpill(glow) {
+  const cx = SCR.x + SCR.w / 2, cy = SCR.y + SCR.h;
+  const spill = x2.createRadialGradient(cx, cy, 20, cx, cy, 520);
+  spill.addColorStop(0, "rgba(120,170,210," + (0.13 + glow * 0.05).toFixed(3) + ")");
   spill.addColorStop(1, "rgba(120,170,210,0)");
   x2.fillStyle = spill; x2.fillRect(0, 0, SW, SH);
 }
 
-/* the table, in perspective */
-function drawTableTopOld() {
-  // top surface: far edge narrower than the near edge
-  x2.beginPath();
-  x2.moveTo(SW * 0.14, TABLE_BACK);
-  x2.lineTo(SW * 0.86, TABLE_BACK);
-  x2.lineTo(SW + 40, TABLE_FRONT);
-  x2.lineTo(-40, TABLE_FRONT);
-  x2.closePath();
-  const tg = x2.createLinearGradient(0, TABLE_BACK, 0, TABLE_FRONT);
-  tg.addColorStop(0, "#241F33"); tg.addColorStop(1, "#12111B");
-  x2.fillStyle = tg; x2.fill();
-  // lit far lip
-  x2.strokeStyle = "rgba(255,255,255,0.18)"; x2.lineWidth = 1.5;
-  x2.beginPath(); x2.moveTo(SW * 0.14, TABLE_BACK); x2.lineTo(SW * 0.86, TABLE_BACK); x2.stroke();
-}
-
-function drawTableFrontOld() {
-  const dg = x2.createLinearGradient(0, TABLE_FRONT, SW, SH);
-  dg.addColorStop(0, "#231F42"); dg.addColorStop(0.55, "#6B1428"); dg.addColorStop(1, "#C40D1B");
-  x2.fillStyle = dg; x2.fillRect(0, TABLE_FRONT, SW, SH - TABLE_FRONT);
-  x2.fillStyle = "rgba(255,255,255,0.07)";
-  for (let yy = TABLE_FRONT + 7; yy < SH; yy += 12)
-    for (let xx = 7; xx < SW; xx += 12) x2.fillRect(xx, yy, 2, 2);
-  x2.fillStyle = "rgba(255,255,255,0.30)"; x2.fillRect(0, TABLE_FRONT, SW, 2);
-  x2.font = "400 20px 'Archivo', Helvetica, Arial, sans-serif";
-  x2.fillStyle = "rgba(255,255,255,0.92)";
-  x2.fillText("KLAXON WIRE", 24, TABLE_FRONT + 32);
-}
-
-/* the fly, sitting at the table */
+/* the fly, at the table, back to the viewer, watching the screen */
 function drawAnchor(now, glow) {
   if (!flyReady) return;
-  const h = 118;
-  const w = h * (flySprite.width / flySprite.height || 1.92);
-  const bob = Math.sin(now / 1200) * 1.4;
-  const cx = SW * 0.30;
-  const y = TABLE_BACK - h + 46 + bob;
+  const h = 134;
+  const w = h * (flySprite.width / flySprite.height || 0.965);
+  const bob = Math.sin(now / 1300) * 1.3;
+  const cx = SW * 0.5;
+  const x = cx - w / 2;
+  const y = TABLE_FRONT - h + 38 + bob;   // head clears the bottom of the screen
 
-  // reflection in the table top
+  // contact shadow on the table top
   x2.save();
-  x2.globalAlpha = 0.16;
-  x2.translate(cx, TABLE_BACK + 44);
-  x2.scale(1, -0.42);
-  x2.drawImage(flySprite, -w / 2, -h + 46, w, h);
+  x2.globalAlpha = 0.55;
+  x2.fillStyle = "#000";
+  x2.beginPath();
+  x2.ellipse(cx, TABLE_FRONT - 6, w * 0.30, 8, 0, 0, Math.PI * 2);
+  x2.fill();
   x2.restore();
 
-  x2.drawImage(flySprite, cx - w / 2, y, w, h);
+  x2.drawImage(flySprite, x, y, w, h);
+
+  // rim light off the screen
   x2.save();
   x2.globalCompositeOperation = "screen";
-  x2.globalAlpha = 0.10 + glow * 0.05;
-  x2.drawImage(flySprite, cx - w / 2, y, w, h);
+  x2.globalAlpha = 0.09 + glow * 0.05;
+  x2.drawImage(flySprite, x, y, w, h);
   x2.restore();
 }
+
 
 /* --- lower third + ticker --- */
 function drawLowerThird() {
-  const h = 52, pad = 14;
-  x2.fillStyle = "rgba(8,8,13,0.90)";
+  const h = LOWER_H;
+  x2.fillStyle = "#0A0A0F";
   x2.fillRect(0, LOWER_Y, SW, h);
-  const g = x2.createLinearGradient(0, LOWER_Y, 190, LOWER_Y + h);
-  g.addColorStop(0, "#272248"); g.addColorStop(1, "#E10F1E");
-  x2.fillStyle = g; x2.fillRect(0, LOWER_Y, 176, h);
+  const g = x2.createLinearGradient(0, LOWER_Y, 186, LOWER_Y + h);
+  g.addColorStop(0, "#272248"); g.addColorStop(1, "#96201F");
+  x2.fillStyle = g; x2.fillRect(0, LOWER_Y, 172, h);
   x2.fillStyle = "rgba(255,255,255,0.12)";
   for (let yy = LOWER_Y + 5; yy < LOWER_Y + h; yy += 10)
-    for (let xx = 5; xx < 176; xx += 10) x2.fillRect(xx, yy, 2, 2);
+    for (let xx = 5; xx < 172; xx += 10) x2.fillRect(xx, yy, 2, 2);
   x2.fillStyle = "#fff";
-  x2.font = "400 17px 'Archivo', Helvetica, Arial, sans-serif";
-  x2.fillText("KLAXON", 16, LOWER_Y + 23);
-  x2.fillText("WIRE", 16, LOWER_Y + 41);
+  x2.font = "400 18px 'Archivo', Helvetica, Arial, sans-serif";
+  x2.fillText("KLAXON", 16, LOWER_Y + 25);
+  x2.fillText("WIRE", 16, LOWER_Y + 48);
 
   const badge = S.verdict || "READING";
   x2.fillStyle = S.verdict === "WIRE IT" ? "#D62839"
                : S.verdict ? "#2A3346" : "#3A2E14";
-  x2.fillRect(190, LOWER_Y + 9, 92, 17);
-  x2.font = "600 10px 'IBM Plex Mono', monospace";
-  x2.fillStyle = S.verdict === "WIRE IT" ? "#0B0B0F"
+  x2.fillRect(192, LOWER_Y + 11, 100, 21);
+  x2.font = "600 11px 'IBM Plex Mono', monospace";
+  x2.fillStyle = S.verdict === "WIRE IT" ? "#fff"
                : S.verdict ? "#8FA0BC" : "#E8A33D";
-  x2.fillText(badge, 197, LOWER_Y + 21);
+  x2.fillText(badge, 204, LOWER_Y + 26);
 
-  x2.font = "700 17px 'Archivo', Helvetica, Arial, sans-serif";
-  x2.fillStyle = "#E8E6E1";
-  const line = wrapText(x2, S.headline || "Waiting for the wire…", SW - 300, 1)[0] || "";
-  x2.fillText(line, 292, LOWER_Y + 23);
+  x2.font = "700 19px 'Archivo', Helvetica, Arial, sans-serif";
+  x2.fillStyle = "#F0EEE9";
+  const line = wrapText(x2, S.headline || "Waiting for the wire…", SW - 320, 1)[0] || "";
+  x2.fillText(line, 306, LOWER_Y + 26);
   x2.font = "400 11px 'IBM Plex Mono', monospace";
-  x2.fillStyle = "#8C8A99";
-  x2.fillText((S.source || "").toUpperCase() + "   wire " + S.wireHz.toFixed(1) +
-              " Hz · skip " + S.skipHz.toFixed(1) + " Hz", 292, LOWER_Y + 42);
-  x2.fillStyle = "#E10F1E"; x2.fillRect(0, LOWER_Y, SW, 2);
+  x2.fillStyle = "#8A8896";
+  x2.fillText((S.source || "").toUpperCase() + "   ·   wire " + S.wireHz.toFixed(1) +
+              " Hz   ·   skip " + S.skipHz.toFixed(1) + " Hz", 306, LOWER_Y + 48);
+  x2.fillStyle = "#D62839"; x2.fillRect(0, LOWER_Y + h, SW, 2);
 }
 
 let tickX = 0, tickCache = null, tickKey = "";
 function drawTicker(dt) {
-  const h = 30;
+  const h = SH - TICK_Y;
   x2.fillStyle = "#0B0B10"; x2.fillRect(0, TICK_Y, SW, h);
   x2.fillStyle = "#D62839"; x2.fillRect(0, TICK_Y, 104, h);
   x2.font = "600 11px 'IBM Plex Mono', monospace";
-  x2.fillStyle = "#0B0B0F"; x2.fillText("ON THE WIRE", 12, TICK_Y + 19);
+  x2.fillStyle = "#fff"; x2.fillText("ON THE WIRE", 12, TICK_Y + 16);
 
   x2.font = "500 13px 'Archivo', Helvetica, Arial, sans-serif";
   const items = S.ticker.length ? S.ticker : ["Waiting for the wire"];
@@ -536,8 +480,8 @@ function drawTicker(dt) {
     for (let i = 0; i < c.items.length; i++) {
       const w = c.w[i];
       if (x + w > 104 && x < SW) {
-        x2.fillStyle = "#D62839"; x2.fillRect(x - 16, TICK_Y + 13, 6, 6);
-        x2.fillStyle = "#D8D6D1"; x2.fillText(c.items[i], x, TICK_Y + 20);
+        x2.fillStyle = "#D62839"; x2.fillRect(x - 16, TICK_Y + 9, 6, 6);
+        x2.fillStyle = "#D8D6D1"; x2.fillText(c.items[i], x, TICK_Y + 17);
       }
       x += w + c.gap;
     }
@@ -557,8 +501,13 @@ function scene(now) {
   if (!backLayer) buildLayers();
   const glow = 0.5 + 0.5 * Math.sin(now / 520);
 
+  // room first, then the light the screen throws into it, then the hole the
+  // stream shows through. the fly is drawn after the hole so it occludes the
+  // video if it ever overlaps.
+  x2.clearRect(0, 0, SW, SH);
   x2.drawImage(backLayer, 0, 0);
-  drawScreen(now, glow);
+  drawSpill(glow);
+  punchScreen();
   drawAnchor(now, glow);
   x2.drawImage(frontLayer, 0, TABLE_FRONT);
   drawLowerThird();
